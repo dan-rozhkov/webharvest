@@ -10,7 +10,6 @@ export interface Config {
   searxngUrl: string | null;
   braveApiKey: string | null;
   idleTimeoutMs: number;
-  respectRobots: boolean;
   /** Только для тестов: пускает приватные/локальные адреса мимо SSRF-защиты.
    *  Никогда не читается из config.json — только из явных overrides (кода вызова),
    *  чтобы файл на диске не мог тихо открыть демон для SSRF. */
@@ -25,7 +24,6 @@ const DEFAULTS: Config = {
   searxngUrl: 'http://127.0.0.1:8080',
   braveApiKey: null,
   idleTimeoutMs: 5 * 60_000,
-  respectRobots: false,
   allowPrivate: false,
 };
 

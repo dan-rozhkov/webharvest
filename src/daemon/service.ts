@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { z } from 'zod';
 import { Cache, scrapeKey } from '../core/cache.js';
 import { DomainQueue } from '../core/politeness.js';
 import { createBrowserPool } from '../core/browser.js';
@@ -23,6 +24,21 @@ export interface Service {
 const FETCH_CONTENT_MAX = 5;
 const FETCH_CONTENT_CONCURRENCY = 3;
 
+// Shape the cache entry must have to be trusted as a ScrapePayload. JSON.parse
+// alone only proves the bytes are valid JSON — it says nothing about whether
+// they're a ScrapePayload. A cache written by an older/incompatible format
+// version (e.g. a renamed field or a schema migration) parses just fine and
+// would otherwise be served as a false HIT, later crashing formatScrape() or
+// any other consumer that trusts `.markdown`/`.title`/`.url` to be strings.
+const cachedPayloadSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  markdown: z.string(),
+  via: z.union([z.literal('http'), z.literal('browser')]),
+  cached: z.boolean(),
+  links: z.array(z.object({ href: z.string(), text: z.string() })).optional(),
+});
+
 export function createService(config: Config): Service {
   if (config.cachePath !== ':memory:') {
     mkdirSync(dirname(config.cachePath), { recursive: true });
@@ -42,19 +58,30 @@ export function createService(config: Config): Service {
   const search = createSearch(providers);
 
   /** Читает кэш, но никогда не даёт кэш-хиту стать хардфейлом: запись могла
-   *  быть от прежней (несовместимой) версии формата payload или повреждена
-   *  на диске. В обоих случаях трактуем как промах и, раз запись всё равно
-   *  бесполезна, вычищаем её — иначе она бы вечно возвращала parse-ошибку
-   *  до истечения TTL. */
+   *  быть повреждена на диске (не-JSON, обрезанный файл) ИЛИ быть валидным
+   *  JSON неправильной формы — например, от прежней несовместимой версии
+   *  формата payload. JSON.parse ловит только первый случай; второй ловит
+   *  только явная проверка формы (cachedPayloadSchema). Оба трактуем как
+   *  промах и, раз запись всё равно бесполезна, вычищаем её — иначе она бы
+   *  вечно возвращала ту же проблему до истечения TTL. */
   function readCache(key: string): ScrapePayload | null {
     const raw = cache.get(key);
     if (!raw) return null;
+
+    let parsed: unknown;
     try {
-      return JSON.parse(raw) as ScrapePayload;
+      parsed = JSON.parse(raw);
     } catch {
       cache.delete(key);
       return null;
     }
+
+    const result = cachedPayloadSchema.safeParse(parsed);
+    if (!result.success) {
+      cache.delete(key);
+      return null;
+    }
+    return result.data;
   }
 
   async function scrape(args: { url: string; includeLinks?: boolean; refresh?: boolean }): Promise<ScrapePayload> {

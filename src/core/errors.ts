@@ -1,12 +1,14 @@
 export type ErrorCode =
   | 'invalid_url'
+  | 'invalid_query'
   | 'blocked'
   | 'timeout'
   | 'not_html'
   | 'too_large'
   | 'network'
   | 'daemon_down'
-  | 'search_unavailable';
+  | 'search_unavailable'
+  | 'internal';
 
 export class HarvestError extends Error {
   constructor(
