@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -44,7 +45,18 @@ async function main(): Promise<void> {
 // Only run the stdio server when this file is executed directly (as the
 // binary Claude Code launches) — not when imported, e.g. by tests that want
 // createMcpServer() without also connecting real stdin/stdout.
-const isMain = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
+//
+// import.meta.url is always a percent-encoded file:// URL (Node also
+// resolves symlinks into it), while process.argv[1] is a raw filesystem
+// path. Comparing `file://${argv[1]}` against import.meta.url breaks for
+// any path containing a space, `#`, or non-ASCII characters, and for any
+// path reached through a symlink — the server would then start, connect no
+// transport, and exit 0 with no error. pathToFileURL performs the same
+// encoding/normalization on both sides before comparing.
+export function isMainModule(argv1: string | undefined, metaUrl: string): boolean {
+  return argv1 !== undefined && metaUrl === pathToFileURL(argv1).href;
+}
+
+if (isMainModule(process.argv[1], import.meta.url)) {
   await main();
 }
