@@ -1,0 +1,12 @@
+[
+  { "url": "https://example.com/", "minChars": 100, "titleIncludes": "Example" },
+  { "url": "https://en.wikipedia.org/wiki/Web_scraping", "minChars": 5000, "titleIncludes": "Web scraping" },
+  { "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers", "minChars": 2000, "titleIncludes": "Headers" },
+  { "url": "https://playwright.dev/docs/intro", "minChars": 1000, "titleIncludes": "Installation" },
+  { "url": "https://vitest.dev/guide/", "minChars": 1000, "titleIncludes": "Getting Started" },
+  { "url": "https://nodejs.org/en/about", "minChars": 800, "titleIncludes": "Node.js" },
+  { "url": "https://github.com/microsoft/playwright", "minChars": 800, "titleIncludes": "playwright" },
+  { "url": "https://news.ycombinator.com/", "minChars": 500, "titleIncludes": "Hacker News" },
+  { "url": "https://blog.cloudflare.com/", "minChars": 500, "titleIncludes": "" },
+  { "url": "https://rust-lang.org/", "minChars": 500, "titleIncludes": "Rust" }
+]

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run --exclude test/live/**",
+    "test": "vitest run --exclude 'test/live/**'",
     "test:live": "vitest run test/live",
     "typecheck": "tsc -p tsconfig.test.json"
   },
