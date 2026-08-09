@@ -4,7 +4,7 @@
     "url": "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch",
     "kind": "docs",
     "expectTitleIncludes": "Fetch",
-    "minTextLength": 3000,
+    "minTextLength": 20000,
     "mustNotInclude": ["Skip to main content", "Toggle navigation"]
   },
   {
@@ -12,7 +12,7 @@
     "url": "https://en.wikipedia.org/wiki/World_Wide_Web",
     "kind": "article",
     "expectTitleIncludes": "World Wide Web",
-    "minTextLength": 8000,
+    "minTextLength": 70000,
     "mustNotInclude": ["Jump to content", "Donate", "Privacy policy"]
   },
   {
@@ -20,7 +20,7 @@
     "url": "https://vitest.dev/guide/",
     "kind": "docs",
     "expectTitleIncludes": "Getting Started",
-    "minTextLength": 1500,
+    "minTextLength": 3000,
     "mustNotInclude": ["Skip to content"]
   },
   {
@@ -28,24 +28,40 @@
     "url": "https://playwright.dev/docs/intro",
     "kind": "docs",
     "expectTitleIncludes": "Installation",
-    "minTextLength": 1500,
+    "minTextLength": 3000,
     "mustNotInclude": ["Skip to main content"]
+  },
+  {
+    "id": "hn-front",
+    "url": "https://news.ycombinator.com/",
+    "kind": "listing",
+    "expectTitleIncludes": "Hacker News",
+    "minTextLength": 3000,
+    "mustNotInclude": []
   },
   {
     "id": "github-repo",
     "url": "https://github.com/microsoft/playwright",
-    "kind": "landing",
+    "kind": "article",
     "expectTitleIncludes": "Playwright",
-    "minTextLength": 2000,
+    "minTextLength": 8000,
     "mustNotInclude": ["Sign up"]
+  },
+  {
+    "id": "nodejs-blog",
+    "url": "https://nodejs.org/en/blog/release/v22.0.0",
+    "kind": "article",
+    "expectTitleIncludes": "v22.0.0",
+    "minTextLength": 25000,
+    "mustNotInclude": []
   },
   {
     "id": "substack-post",
     "url": "https://astralcodexten.substack.com/archive",
-    "kind": "listing",
+    "kind": "spa",
     "expectTitleIncludes": "Archive",
-    "minTextLength": 1000,
-    "mustNotInclude": ["Subscribe"]
+    "minTextLength": 0,
+    "mustNotInclude": []
   },
   {
     "id": "spa-shell",

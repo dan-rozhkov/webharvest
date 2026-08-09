@@ -19,7 +19,7 @@ for (const t of TARGETS) {
     const res = await request(t.url, {
       headers: { 'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0 Safari/537.36' },
       maxRedirections: 5,
-      connect: { timeout: 10000 },
+      connect: { timeout: 30000 },
     });
     const html = await res.body.text();
     const path = new URL(`../test/fixtures/${t.id}.html`, import.meta.url);
