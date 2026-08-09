@@ -64,7 +64,21 @@ export function createHttpServer(service: Service): FastifyInstance {
   app.post('/scrape', async (req) => {
     const parsed = scrapeSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new HarvestError('invalid_url', 'Требуется поле url');
+      // Name the field zod actually rejected, not always "url": a client
+      // sending {"url": "...", "refresh": "yes"} fails on `refresh`, but
+      // hardcoding 'invalid_url'/"Требуется поле url" here used to tell the
+      // model to go fix a URL that was never the problem. Only genuine
+      // url-field failures (missing/wrong type) keep the invalid_url code -
+      // everything else about the request being malformed is invalid_request.
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.join('.') || 'body';
+      if (field === 'url') {
+        throw new HarvestError('invalid_url', 'Требуется поле url');
+      }
+      throw new HarvestError(
+        'invalid_request',
+        `Некорректное поле "${field}": ${issue?.message ?? 'не прошло валидацию'}`,
+      );
     }
     return service.scrape(parsed.data);
   });

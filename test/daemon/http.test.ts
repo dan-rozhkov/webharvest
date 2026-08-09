@@ -61,6 +61,22 @@ describe('HTTP API', () => {
     await app.close();
   });
 
+  it('POST /scrape с невалидным полем refresh называет offending field, а не врёт про url', async () => {
+    const app = createHttpServer(stubService());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/scrape',
+      payload: { url: 'https://example.com', refresh: 'yes' },
+    });
+    expect(res.statusCode).toBe(400);
+    // Must NOT be invalid_url — url itself is fine here, refresh is the
+    // actual problem. The old code always said invalid_url/"Требуется поле
+    // url" regardless of which field zod rejected.
+    expect(res.json().error.code).toBe('invalid_request');
+    expect(res.json().error.message).toMatch(/refresh/);
+    await app.close();
+  });
+
   it('маппит blocked в 422 с указанием защиты', async () => {
     const app = createHttpServer(stubService({
       scrape: async () => { throw new HarvestError('blocked', 'закрыто cloudflare', { by: 'cloudflare' }); },
