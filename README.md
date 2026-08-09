@@ -40,8 +40,10 @@ You control the browser automation — no opaque API calls, no subscription, all
 
 3. **Start SearXNG (search backend):**
    ```bash
-   # Generate a random secret for SearXNG (one-time)
-   sed -i '' "s/CHANGE_ME_TO_A_RANDOM_STRING/$(openssl rand -hex 16)/" searxng/settings.yml
+   # Create your local config from the template (one-time).
+   # searxng/settings.yml is gitignored: secret_key is per-install and must not be committed.
+   cp searxng/settings.yml.example searxng/settings.yml
+   sed -i '' "s/CHANGE_ME_TO_A_RANDOM_STRING/$(openssl rand -hex 32)/" searxng/settings.yml
    
    # Start the container
    docker compose up -d
@@ -49,6 +51,9 @@ You control the browser automation — no opaque API calls, no subscription, all
    # Verify it's up (wait 10 seconds, then):
    curl -s 'http://127.0.0.1:8080/search?q=hello&format=json' | head -c 100
    ```
+   The last command must return JSON. If it returns HTML or a 403, `formats` in
+   `searxng/settings.yml` is missing `json` — fix it and restart the container.
+   Note that `limiter` must stay `false`, or SearXNG rate-limits the daemon querying it.
 
 4. **Register the daemon with launchd (macOS only for now):**
    ```bash

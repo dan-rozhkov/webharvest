@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# SearXNG config carries a per-install secret_key — keep the real one out of git.
+# Copy searxng/settings.yml.example to searxng/settings.yml and generate a secret.
+searxng/settings.yml
