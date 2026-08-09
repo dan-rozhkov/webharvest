@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'undici';
 import { loadConfig } from '../daemon/config.js';
 import { plistContents, LABEL } from './launchd.js';
+import { reconcileBeforeInstall, stopManualDaemon } from './daemon-process.js';
 
 const config = loadConfig();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -41,35 +42,6 @@ async function waitUp(attempts = 20): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 300));
   }
   return false;
-}
-
-/** Verify that a PID still belongs to our daemon process.
- *  Before signalling a PID from the pidFile, confirm it hasn't been reused by an unrelated process.
- *  Returns true if the PID is valid for our daemon, false if stale/invalid.
- *  Cleans up the stale pidFile if verification fails. */
-function verifyPidBelongsToDaemon(pid: string): boolean {
-  try {
-    const commandLine = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8' }).trim();
-    // Check if the command line contains our daemon path
-    if (commandLine.includes(daemonPath)) {
-      return true;
-    }
-    // PID was reused; remove stale pidFile
-    try {
-      rmSync(pidFile);
-    } catch {
-      // pidFile already gone
-    }
-    return false;
-  } catch {
-    // ps failed (PID doesn't exist); clean up
-    try {
-      rmSync(pidFile);
-    } catch {
-      // pidFile already gone
-    }
-    return false;
-  }
 }
 
 const commands: Record<string, () => Promise<void>> = {
@@ -134,28 +106,19 @@ const commands: Record<string, () => Promise<void>> = {
       } catch {
         // pidFile doesn't exist, that's fine
       }
+      console.log('Демон остановлен.');
+      return;
     }
 
     // For daemons started manually (not via install), use the recorded PID if available.
-    if (existsSync(pidFile)) {
-      const pid = readFileSync(pidFile, 'utf8').trim();
-      // Verify the PID still belongs to our daemon (not reused by another process)
-      if (verifyPidBelongsToDaemon(pid)) {
-        try {
-          execFileSync('kill', [pid]);
-        } catch {
-          // Process already dead or permissions issue
-        }
-      }
-      // Clean up the pidFile regardless (verifyPidBelongsToDaemon removes it if invalid)
-      try {
-        rmSync(pidFile);
-      } catch {
-        // Already removed
-      }
+    // stopManualDaemon only removes the pidFile when the daemon is confirmed gone or stale;
+    // if signalling fails (e.g. EPERM) the pidFile is kept so tracking isn't lost.
+    const result = stopManualDaemon(pidFile, daemonPath);
+    if (result === 'error') {
+      console.error('Не удалось остановить демон (нет прав или процесс занят). daemon.pid сохранён.');
+      process.exit(1);
     }
-
-    console.log('Демон остановлен.');
+    console.log(result === 'not-found' ? 'Работающий демон не найден.' : 'Демон остановлен.');
   },
 
   async status() {
@@ -176,6 +139,16 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async install() {
+    // Reconcile any manually-started daemon before enabling supervision. Without this,
+    // RunAtLoad would spawn a second daemon on the same port while the original becomes
+    // untracked and unkillable (its pidFile would otherwise just be deleted below).
+    if (reconcileBeforeInstall(pidFile, daemonPath) === 'blocked') {
+      console.error(
+        'Не удалось остановить вручную запущенный демон; install отменён, чтобы не плодить второй процесс на том же порту.',
+      );
+      process.exit(1);
+    }
+
     mkdirSync(home, { recursive: true });
     mkdirSync(dirname(plistPath), { recursive: true });
     writeFileSync(
@@ -187,12 +160,6 @@ const commands: Record<string, () => Promise<void>> = {
         port: config.port,
       }),
     );
-    // Clear any stale pidFile from a previous manual start
-    try {
-      rmSync(pidFile);
-    } catch {
-      // pidFile doesn't exist, that's fine
-    }
     // First unload to clear any existing Disabled override
     try {
       execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
