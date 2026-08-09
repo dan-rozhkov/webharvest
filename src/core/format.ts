@@ -13,11 +13,16 @@ export function truncateMarkdown(
   md: string,
   maxChars: number,
 ): { text: string; truncated: boolean; remaining: number } {
-  if (md.length <= maxChars) return { text: md, truncated: false, remaining: 0 };
+  const cap = Math.max(0, maxChars);
+  if (md.length <= cap) return { text: md, truncated: false, remaining: 0 };
 
-  const window = md.slice(0, maxChars);
+  let window = md.slice(0, cap);
   const lastBreak = window.lastIndexOf('\n\n');
-  const text = lastBreak > maxChars * 0.5 ? window.slice(0, lastBreak).trimEnd() : window;
+  let text = lastBreak > cap * 0.5 ? window.slice(0, lastBreak).trimEnd() : window.trimEnd();
+
+  // Trim unpaired high surrogate at end (left by hard-cut through emoji/surrogate pair)
+  text = text.replace(/[\ud800-\udbff]$/, '');
+
   return { text, truncated: true, remaining: md.length - text.length };
 }
 

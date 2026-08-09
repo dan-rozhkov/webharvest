@@ -20,6 +20,52 @@ describe('truncateMarkdown', () => {
     expect(r.text).toHaveLength(30);
     expect(r.truncated).toBe(true);
   });
+
+  it('текст ровно maxChars длины не трогает', () => {
+    const md = 'a'.repeat(30);
+    const r = truncateMarkdown(md, 30);
+    expect(r.text).toBe(md);
+    expect(r.truncated).toBe(false);
+    expect(r.remaining).toBe(0);
+  });
+
+  it('зажимает maxChars=0 и возвращает пусто с остатком', () => {
+    const md = 'содержимое есть';
+    const r = truncateMarkdown(md, 0);
+    expect(r.text).toBe('');
+    expect(r.truncated).toBe(true);
+    expect(r.remaining).toBe(md.length);
+  });
+
+  it('зажимает maxChars=-1 и возвращает пусто с остатком', () => {
+    const md = 'содержимое есть';
+    const r = truncateMarkdown(md, -1);
+    expect(r.text).toBe('');
+    expect(r.truncated).toBe(true);
+    expect(r.remaining).toBe(md.length);
+  });
+
+  it('зажимает maxChars меньше, чем отрицательная длина', () => {
+    const md = 'текст';
+    const r = truncateMarkdown(md, -100);
+    expect(r.text).toBe('');
+    expect(r.truncated).toBe(true);
+    expect(r.remaining).toBe(md.length);
+  });
+
+  it('не оставляет в конце orphaned high surrogate (emoji на границе)', () => {
+    // 👋 (wave emoji) занимает 2 кодовых единицы (surrogate pair)
+    // Если обрежем прямо в середине, останется orphaned high surrogate
+    const md = 'hello👋world';
+    const r = truncateMarkdown(md, 6);
+    // 'h' (1) + 'e' (1) + 'l' (1) + 'l' (1) + 'o' (1) + '👋' (2) = 7 в UTF-16
+    // Обрезаем на 6, что попадает в середину emoji
+    expect(r.text).toBe('hello');
+    expect(r.truncated).toBe(true);
+    // Проверяем, что нет orphaned surrogate в конце
+    const lastCode = r.text.charCodeAt(r.text.length - 1);
+    expect(lastCode).toBeLessThan(0xd800); // Не high surrogate
+  });
 });
 
 describe('formatScrape', () => {
@@ -81,5 +127,23 @@ describe('formatSearch', () => {
 
   it('честно сообщает о пустой выдаче', () => {
     expect(formatSearch('нечто', [])).toMatch(/ничего не найдено/i);
+  });
+
+  it('нумерует несколько результатов правильно (1, 2, 3)', () => {
+    const out = formatSearch('test', [
+      { url: 'https://first.com/', title: 'First', snippet: 'first snippet', engine: 'brave' },
+      { url: 'https://second.com/', title: 'Second', snippet: 'second snippet', engine: 'brave' },
+      { url: 'https://third.com/', title: 'Third', snippet: 'third snippet', engine: 'brave' },
+    ]);
+    expect(out).toContain('1.');
+    expect(out).toContain('2.');
+    expect(out).toContain('3.');
+    // Проверяем, что результаты идут в правильном порядке
+    const idx1 = out.indexOf('1. **First**');
+    const idx2 = out.indexOf('2. **Second**');
+    const idx3 = out.indexOf('3. **Third**');
+    expect(idx1).toBeGreaterThan(-1);
+    expect(idx2).toBeGreaterThan(idx1);
+    expect(idx3).toBeGreaterThan(idx2);
   });
 });
