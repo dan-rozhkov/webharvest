@@ -39,6 +39,39 @@ const STEALTH_INIT = `
 
 const CLOSED_MESSAGE = 'Пул браузеров остановлен, рендер отклонён';
 
+/**
+ * Retry logic for page.content() which can race with page navigation.
+ * Exported for testing; call the provided fn up to maxRetries times,
+ * retrying only on "page is navigating and changing the content" error.
+ */
+export async function retryPageContent(
+  fn: () => Promise<string>,
+  options: { maxRetries?: number; waitMs?: number } = {},
+): Promise<string> {
+  const maxRetries = options.maxRetries ?? 3;
+  const waitMs = options.waitMs ?? 50;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (/page is navigating and changing the content/i.test(lastError.message)) {
+        // Navigation race: retry after brief wait if not on last attempt
+        if (attempt < maxRetries - 1) {
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+      }
+      // Not a navigation error or exhausted retries: re-throw
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new Error('Failed to get page content');
+}
+
 export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   const idleTimeoutMs = opts.idleTimeoutMs ?? 5 * 60_000;
   const maxConcurrent = opts.maxConcurrent ?? 3;
@@ -161,29 +194,7 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
       await page.waitForTimeout(300);
 
       // Retry page.content() if it fails with navigation race condition.
-      // Page navigation can race with content extraction; retry up to 3 times.
-      let html: string | undefined;
-      let lastError: Error | undefined;
-      const maxRetries = 3;
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          html = await page.content();
-          break; // Success
-        } catch (e) {
-          lastError = e instanceof Error ? e : new Error(String(e));
-          if (/page is navigating and changing the content/i.test(lastError.message)) {
-            // Navigation race: retry after brief wait if not on last attempt
-            if (attempt < maxRetries - 1) {
-              await page.waitForTimeout(50);
-              continue;
-            }
-          }
-          // Not a navigation error or exhausted retries: re-throw
-          throw lastError;
-        }
-      }
-      if (!html) throw lastError ?? new Error('Failed to get page content');
-
+      const html = await retryPageContent(() => page.content());
       return { html, finalUrl: page.url(), status: response?.status() ?? 0 };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

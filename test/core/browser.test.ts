@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { createBrowserPool, type BrowserPool } from '../../src/core/browser.js';
+import { createBrowserPool, type BrowserPool, retryPageContent } from '../../src/core/browser.js';
 
 let server: Server | undefined;
 let pool: BrowserPool | undefined;
@@ -243,19 +243,45 @@ describe('BrowserPool', () => {
     await Promise.allSettled([first]);
   });
 
-  it('повторно пытается получить контент при race condition навигации', async () => {
-    // Simulate a page that navigates to itself shortly after load,
-    // which can cause "page is navigating and changing the content" error
-    // during page.content(). The retry logic should handle this.
-    const base = await serve(() => ({
-      body: `<html><body><p>содержимое</p><script>
-        setTimeout(() => {
-          window.location.href = window.location.href;
-        }, 50);
-      </script></body></html>`,
-    }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
-    const r = await pool.render(base + '/', { timeoutMs: 5000 });
-    expect(r.html).toContain('содержимое');
+  it('повторно пытается получить контент при race condition навигации (deterministic)', async () => {
+    // Unit test: retryPageContent retries specifically on navigation race,
+    // not on other errors. Uses stub that throws exactly twice, then succeeds.
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      if (callCount < 3) {
+        throw new Error('Unable to retrieve content because the page is navigating and changing the content.');
+      }
+      return '<html>success</html>';
+    };
+    const result = await retryPageContent(fn, { maxRetries: 3, waitMs: 0 });
+    expect(result).toBe('<html>success</html>');
+    expect(callCount).toBe(3);
+  });
+
+  it('не повторяет попытку для других ошибок', async () => {
+    // retryPageContent does NOT retry on non-navigation errors
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      throw new Error('Some other error');
+    };
+    await expect(retryPageContent(fn, { maxRetries: 3 })).rejects.toMatchObject({
+      message: 'Some other error',
+    });
+    expect(callCount).toBe(1); // Tried once, then re-threw
+  });
+
+  it('отказывает после исчерпания попыток', async () => {
+    // retryPageContent gives up after maxRetries attempts
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      throw new Error('Unable to retrieve content because the page is navigating and changing the content.');
+    };
+    await expect(retryPageContent(fn, { maxRetries: 2, waitMs: 0 })).rejects.toMatchObject({
+      message: expect.stringContaining('page is navigating'),
+    });
+    expect(callCount).toBe(2); // Tried twice, then gave up
   });
 });
