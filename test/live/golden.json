@@ -8,5 +8,5 @@
   { "url": "https://github.com/microsoft/playwright", "minChars": 800, "titleIncludes": "playwright" },
   { "url": "https://news.ycombinator.com/", "minChars": 500, "titleIncludes": "Hacker News" },
   { "url": "https://blog.cloudflare.com/", "minChars": 500, "titleIncludes": "" },
-  { "url": "https://rust-lang.org/", "minChars": 500, "titleIncludes": "Rust" }
+  { "url": "https://www.typescriptlang.org/", "minChars": 500, "titleIncludes": "TypeScript" }
 ]

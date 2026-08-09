@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createService } from '../../src/daemon/service.js';
 import { loadConfig } from '../../src/daemon/config.js';
+import { HarvestError } from '../../src/core/errors.js';
 
 interface Golden {
   url: string;
@@ -30,20 +31,38 @@ const JUNK = [
 describe.each(golden)('live scrape: $url', (g) => {
   it('возвращает достаточно текста и правильный заголовок', async () => {
     const started = Date.now();
-    const r = await service.scrape({ url: g.url, refresh: true });
+    let r;
+    try {
+      r = await service.scrape({ url: g.url, refresh: true });
+    } catch (e) {
+      // Rethrow HarvestError with more diagnostic context
+      if (HarvestError.is(e)) {
+        throw new Error(`${e.code}: ${g.url} - ${e.message}`);
+      }
+      throw e;
+    }
 
-    expect(r.markdown.length).toBeGreaterThanOrEqual(g.minChars);
+    expect(r.markdown.length, `via=${r.via} chars=${r.markdown.length}`).toBeGreaterThanOrEqual(g.minChars);
     if (g.titleIncludes) {
-      expect(r.title.toLowerCase()).toContain(g.titleIncludes.toLowerCase());
+      expect(r.title.toLowerCase(), `url=${g.url} via=${r.via} title="${r.title}"`).toContain(g.titleIncludes.toLowerCase());
     }
     const elapsed = Date.now() - started;
-    expect(elapsed).toBeLessThan(45_000);
+    expect(elapsed, `via=${r.via} elapsed=${elapsed}ms`).toBeLessThan(45_000);
   }, 60_000);
 
   it('не тащит навигационный мусор', async () => {
-    const r = await service.scrape({ url: g.url });
+    let r;
+    try {
+      r = await service.scrape({ url: g.url });
+    } catch (e) {
+      // Rethrow HarvestError with more diagnostic context
+      if (HarvestError.is(e)) {
+        throw new Error(`${e.code}: ${g.url} - ${e.message}`);
+      }
+      throw e;
+    }
     for (const junk of JUNK) {
-      expect(r.markdown).not.toContain(junk);
+      expect(r.markdown, `via=${r.via} chars=${r.markdown.length} found="${junk}"`).not.toContain(junk);
     }
   }, 60_000);
 });

@@ -9,6 +9,8 @@ afterAll(async () => {
 
 // Detect if search is available
 let searchAvailable: boolean | null = null;
+let skipReason = '';
+
 async function checkSearchAvailable(): Promise<boolean> {
   if (searchAvailable !== null) return searchAvailable;
 
@@ -16,7 +18,7 @@ async function checkSearchAvailable(): Promise<boolean> {
   const hasSearxng = process.env.WEBHARVEST_SEARXNG_URL !== 'null' && !!process.env.WEBHARVEST_SEARXNG_URL;
 
   if (!hasEnvKey && !hasSearxng) {
-    console.log('⊘ Skipping search tests: BRAVE_API_KEY not set and SearXNG not configured');
+    skipReason = 'BRAVE_API_KEY not set and SearXNG not configured';
     searchAvailable = false;
     return false;
   }
@@ -27,34 +29,34 @@ async function checkSearchAvailable(): Promise<boolean> {
     searchAvailable = true;
     return true;
   } catch (e) {
-    console.log(`⊘ Skipping search tests: Search backend unreachable (${e instanceof Error ? e.message : String(e)})`);
+    skipReason = `Search backend unreachable: ${e instanceof Error ? e.message : String(e)}`;
     searchAvailable = false;
     return false;
   }
 }
 
 describe('live search', () => {
-  it('находит официальный сайт по названию инструмента', async () => {
+  it('находит официальный сайт по названию инструмента', async (ctx) => {
     if (!(await checkSearchAvailable())) {
-      return; // Skip
+      ctx.skip();
     }
     const results = await service.search({ query: 'playwright testing framework docs' });
     expect(results.length).toBeGreaterThan(0);
     expect(results.some((r) => r.url.includes('playwright.dev'))).toBe(true);
   }, 30_000);
 
-  it('не возвращает дублей по нормализованному URL', async () => {
+  it('не возвращает дублей по нормализованному URL', async (ctx) => {
     if (!(await checkSearchAvailable())) {
-      return; // Skip
+      ctx.skip();
     }
     const results = await service.search({ query: 'typescript handbook', limit: 10 });
     const hosts = results.map((r) => r.url.replace(/[?#].*$/, ''));
     expect(new Set(hosts).size).toBe(hosts.length);
   }, 30_000);
 
-  it('догружает содержимое и переживает падение отдельного результата', async () => {
+  it('догружает содержимое и переживает падение отдельного результата', async (ctx) => {
     if (!(await checkSearchAvailable())) {
-      return; // Skip
+      ctx.skip();
     }
     const results = await service.search({
       query: 'vitest getting started',

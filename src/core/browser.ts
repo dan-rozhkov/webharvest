@@ -159,7 +159,31 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
       // can't itself eat into the headroom the outer deadline relies on.
       await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
       await page.waitForTimeout(300);
-      const html = await page.content();
+
+      // Retry page.content() if it fails with navigation race condition.
+      // Page navigation can race with content extraction; retry up to 3 times.
+      let html: string | undefined;
+      let lastError: Error | undefined;
+      const maxRetries = 3;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          html = await page.content();
+          break; // Success
+        } catch (e) {
+          lastError = e instanceof Error ? e : new Error(String(e));
+          if (/page is navigating and changing the content/i.test(lastError.message)) {
+            // Navigation race: retry after brief wait if not on last attempt
+            if (attempt < maxRetries - 1) {
+              await page.waitForTimeout(50);
+              continue;
+            }
+          }
+          // Not a navigation error or exhausted retries: re-throw
+          throw lastError;
+        }
+      }
+      if (!html) throw lastError ?? new Error('Failed to get page content');
+
       return { html, finalUrl: page.url(), status: response?.status() ?? 0 };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

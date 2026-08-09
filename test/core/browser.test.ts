@@ -242,4 +242,20 @@ describe('BrowserPool', () => {
     releaseFirst?.();
     await Promise.allSettled([first]);
   });
+
+  it('повторно пытается получить контент при race condition навигации', async () => {
+    // Simulate a page that navigates to itself shortly after load,
+    // which can cause "page is navigating and changing the content" error
+    // during page.content(). The retry logic should handle this.
+    const base = await serve(() => ({
+      body: `<html><body><p>содержимое</p><script>
+        setTimeout(() => {
+          window.location.href = window.location.href;
+        }, 50);
+      </script></body></html>`,
+    }));
+    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    const r = await pool.render(base + '/', { timeoutMs: 5000 });
+    expect(r.html).toContain('содержимое');
+  });
 });
