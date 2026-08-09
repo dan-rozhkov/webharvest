@@ -175,6 +175,15 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   /** Public, terminal shutdown: no render() may relaunch after this. */
   async function shutdown(): Promise<void> {
     closed = true;
+    // Wake every render still parked behind the maxConcurrent gate: each
+    // waiter re-checks `closed` at the top of its loop (see render()) and
+    // throws immediately without ever incrementing `active`, so it never
+    // calls release() to wake the *next* waiter itself. Left undrained, a
+    // queue of N waiters would need N-1 more release() calls that will
+    // never come — every waiter past the first hangs forever. Draining the
+    // whole queue here, rather than waking one, is what actually settles
+    // all of them.
+    while (waiting.length) waiting.shift()!();
     await teardown();
   }
 

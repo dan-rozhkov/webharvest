@@ -257,6 +257,61 @@ describe('BrowserPool', () => {
     await Promise.allSettled([first]);
   });
 
+  it(
+    'shutdown() дренирует всю очередь ожидающих слота, а не будит только одного',
+    async () => {
+      // Regression for a deadlock: with maxConcurrent:1, one render holds
+      // the only slot and two more are parked in `waiting`. release() only
+      // ever wakes one waiter, and a woken waiter that sees closed===true
+      // throws without incrementing `active` or calling release() itself -
+      // so the second queued render never got woken at all and its promise
+      // stayed pending forever. Without draining the whole queue in
+      // shutdown(), this test hangs past its own timeout instead of
+      // rejecting quickly.
+      let releaseFirst: (() => void) | undefined;
+      server = createServer((req, res) => {
+        if (!releaseFirst) {
+          releaseFirst = () => {
+            res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+            res.end('<html><body>x</body></html>');
+          };
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<html><body>x</body></html>');
+      });
+      await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+      const { port } = server!.address() as { port: number };
+      const base = `http://127.0.0.1:${port}`;
+      pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 1 });
+
+      const first = pool.render(base + '/', { timeoutMs: 5000 });
+      const second = pool.render(base + '/', { timeoutMs: 5000 });
+      const third = pool.render(base + '/', { timeoutMs: 5000 });
+      first.catch(() => {});
+      second.catch(() => {});
+      third.catch(() => {});
+
+      await new Promise<void>((resolve) => {
+        const check = setInterval(() => {
+          if (releaseFirst) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 10);
+      });
+
+      await pool.shutdown();
+      // Both queued renders must reject promptly, not hang.
+      await expect(second).rejects.toMatchObject({ code: 'network' });
+      await expect(third).rejects.toMatchObject({ code: 'network' });
+
+      releaseFirst?.();
+      await Promise.allSettled([first]);
+    },
+    8000,
+  );
+
   it('повторно пытается получить контент при race condition навигации (deterministic)', async () => {
     // Unit test: retryPageContent retries specifically on navigation race,
     // not on other errors. Uses stub that throws exactly twice, then succeeds.
