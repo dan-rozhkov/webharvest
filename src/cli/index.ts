@@ -16,13 +16,22 @@ const logPath = join(home, 'daemon.log');
 const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const baseUrl = `http://${config.host}:${config.port}`;
 
-async function isUp(): Promise<boolean> {
+async function getHealth(): Promise<{ ok: boolean; browser: boolean } | null> {
   try {
     const res = await request(`${baseUrl}/health`, { headersTimeout: 1500, bodyTimeout: 1500 });
-    return res.statusCode === 200;
+    if (res.statusCode === 200) {
+      const body = await res.body.json() as { ok?: boolean; browser?: boolean };
+      return { ok: body.ok ?? false, browser: body.browser ?? false };
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function isUp(): Promise<boolean> {
+  const health = await getHealth();
+  return health?.ok ?? false;
 }
 
 async function waitUp(attempts = 20): Promise<boolean> {
@@ -47,15 +56,26 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async stop() {
-    // First, try to stop via launchctl (if running under launchd).
-    // This prevents the daemon from being immediately restarted by launchd's KeepAlive.
-    try {
-      execFileSync('launchctl', ['stop', LABEL], { stdio: 'ignore' });
-    } catch {
-      // Not running under launchd, or already stopped — that's fine.
+    // If running under launchd, unload the plist to remove the daemon from launchd's supervision.
+    // launchctl stop only pauses the job; KeepAlive=true causes immediate restart.
+    // unload -w (or bootout) exits the daemon and leaves it unloaded so it stays stopped.
+    if (existsSync(plistPath)) {
+      try {
+        execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
+      } catch {
+        // Plist may not be loaded, or unload may not be available (older macOS).
+        // Try bootout as fallback for newer macOS (10.13+).
+        try {
+          execFileSync('launchctl', ['bootout', `gui/${execFileSync('id', ['-u'], { encoding: 'utf8' }).trim()}`, plistPath], {
+            stdio: 'ignore',
+          });
+        } catch {
+          // Neither works; plist may not be loaded. That's fine.
+        }
+      }
     }
 
-    // Then, try to kill any remaining process matching the daemon path.
+    // Finally, for daemons started manually (not via install), kill any remaining process.
     try {
       execFileSync('pkill', ['-f', daemonPath], { stdio: 'ignore' });
     } catch {
@@ -66,11 +86,15 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async status() {
-    const running = await isUp();
-    if (running) {
-      console.log(`Работает: ${baseUrl}`);
-    } else {
+    const health = await getHealth();
+    if (health === null) {
       console.log('Не работает.');
+    } else if (health.ok) {
+      const browser = health.browser ? '(браузер запущен)' : '(браузер спит)';
+      console.log(`Работает: ${baseUrl} ${browser}`);
+    } else {
+      const browser = health.browser ? '(браузер запущен)' : '(браузер спит)';
+      console.log(`Нездоров: ${baseUrl} ${browser}`);
     }
   },
 
@@ -91,18 +115,23 @@ const commands: Record<string, () => Promise<void>> = {
       }),
     );
     try {
-      execFileSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+      execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
     } catch {
       // Not loaded yet, that's fine.
     }
-    execFileSync('launchctl', ['load', plistPath]);
+    try {
+      execFileSync('launchctl', ['load', plistPath]);
+    } catch (err) {
+      console.error(`Ошибка при загрузке в launchd: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
     console.log(`Автозапуск настроен: ${plistPath}`);
   },
 
   async uninstall() {
     if (existsSync(plistPath)) {
       try {
-        execFileSync('launchctl', ['unload', plistPath], { stdio: 'ignore' });
+        execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
       } catch {
         // Already unloaded, that's fine.
       }

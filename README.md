@@ -32,7 +32,13 @@ You control the browser automation — no opaque API calls, no subscription, all
    npm run build
    ```
 
-2. **Start SearXNG (search backend):**
+2. **Install the CLI globally:**
+   ```bash
+   npm link
+   ```
+   This makes `webharvest` available as a command in your shell. Alternatively, use `npx webharvest` to run without installing globally.
+
+3. **Start SearXNG (search backend):**
    ```bash
    # Generate a random secret for SearXNG (one-time)
    sed -i '' "s/CHANGE_ME_TO_A_RANDOM_STRING/$(openssl rand -hex 16)/" searxng/settings.yml
@@ -44,16 +50,17 @@ You control the browser automation — no opaque API calls, no subscription, all
    curl -s 'http://127.0.0.1:8080/search?q=hello&format=json' | head -c 100
    ```
 
-3. **Install the daemon (macOS only for now):**
+4. **Register the daemon with launchd (macOS only for now):**
    ```bash
    webharvest install
    ```
-   This registers the daemon with launchd, so it starts automatically and restarts if it crashes.
+   This registers the daemon with launchd, so it starts automatically and restarts if it crashes. Use `webharvest start` to start it immediately, or it will start at next login.
 
-4. **Connect to Claude Code:**
+5. **Connect to Claude Code:**
    ```bash
-   claude mcp add webharvest -- node /path/to/webharvest/dist/mcp/index.js
+   claude mcp add webharvest -- node /absolute/path/to/webharvest/dist/mcp/index.js
    ```
+   Replace the path with the actual path to your clone. You can find it with `pwd` in the webharvest directory.
 
 ### Common Commands
 
