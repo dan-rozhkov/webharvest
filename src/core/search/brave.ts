@@ -5,11 +5,17 @@ interface BraveRaw {
   web?: { results?: { url?: string; title?: string; description?: string }[] };
 }
 
-const stripTags = (s: string) => s.replace(/<[^>]+>/g, '').trim();
+const stripTags = (s: string) =>
+  s
+    .replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '') // complete tags with quoted attributes
+    .replace(/<[^>]*$/, '') // incomplete tag at end
+    .trim();
 
 export function parseBrave(raw: unknown, limit: number): SearchResult[] {
   const data = (raw ?? {}) as BraveRaw;
-  return (data.web?.results ?? [])
+  const results = data.web?.results ?? [];
+  if (!Array.isArray(results)) return [];
+  return results
     .filter((r) => typeof r.url === 'string')
     .slice(0, limit)
     .map((r) => ({

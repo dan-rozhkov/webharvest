@@ -7,7 +7,9 @@ interface SearxngRaw {
 
 export function parseSearxng(raw: unknown, limit: number): SearchResult[] {
   const data = (raw ?? {}) as SearxngRaw;
-  return (data.results ?? [])
+  const results = data.results ?? [];
+  if (!Array.isArray(results)) return [];
+  return results
     .filter((r): r is Required<Pick<typeof r, 'url'>> & typeof r => typeof r.url === 'string')
     .slice(0, limit)
     .map((r) => ({

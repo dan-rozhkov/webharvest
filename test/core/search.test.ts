@@ -28,6 +28,14 @@ describe('parseSearxng', () => {
     expect(parseSearxng({ results: [] }, 5)).toEqual([]);
     expect(parseSearxng({}, 5)).toEqual([]);
   });
+
+  it('не падает когда results строка вместо массива', () => {
+    expect(parseSearxng({ results: 'nope' }, 5)).toEqual([]);
+  });
+
+  it('не падает когда results число вместо массива', () => {
+    expect(parseSearxng({ results: 42 }, 5)).toEqual([]);
+  });
 });
 
 describe('parseBrave', () => {
@@ -43,6 +51,42 @@ describe('parseBrave', () => {
 
   it('не падает на пустом ответе', () => {
     expect(parseBrave({}, 5)).toEqual([]);
+  });
+
+  it('не падает когда web.results число вместо массива', () => {
+    expect(parseBrave({ web: { results: 42 } }, 5)).toEqual([]);
+  });
+
+  it('вычищает HTML теги с атрибутами содержащими >', () => {
+    const r = parseBrave({
+      web: {
+        results: [
+          {
+            url: 'https://example.com',
+            title: '<a title="a>b">link</a>',
+            description: 'text with <a title="a>b">html</a> tag',
+          },
+        ],
+      },
+    }, 10);
+    expect(r[0]!.title).toBe('link');
+    expect(r[0]!.snippet).toBe('text with html tag');
+  });
+
+  it('вычищает незакрытые теги в конце', () => {
+    const r = parseBrave({
+      web: {
+        results: [
+          {
+            url: 'https://example.com',
+            title: 'title <strong',
+            description: 'snippet ends with <em',
+          },
+        ],
+      },
+    }, 10);
+    expect(r[0]!.title).toBe('title');
+    expect(r[0]!.snippet).toBe('snippet ends with');
   });
 });
 
@@ -106,6 +150,22 @@ describe('createSearch', () => {
   });
 
   it('бросает search_unavailable, если провайдеров нет вовсе', async () => {
-    await expect(createSearch([]).search('q', 5)).rejects.toMatchObject({ code: 'search_unavailable' });
+    const err = await createSearch([]).search('q', 5).catch((e) => e);
+    expect(err).toBeInstanceOf(HarvestError);
+    expect(err.code).toBe('search_unavailable');
+    expect(err.message).toContain('не настроены');
+    expect(err.message).toContain('BRAVE_API_KEY');
+  });
+
+  it('бросает search_unavailable с конкретной причиной для каждого провайдера', async () => {
+    const s = createSearch([
+      provider('searxng', async () => { throw new Error('connect ECONNREFUSED'); }),
+      provider('brave', async () => { throw new Error('401'); }),
+    ]);
+    const err = await s.search('q', 5).catch((e) => e);
+    expect(err).toBeInstanceOf(HarvestError);
+    expect(err.code).toBe('search_unavailable');
+    expect(err.message).toContain('searxng: connect ECONNREFUSED');
+    expect(err.message).toContain('brave: 401');
   });
 });
