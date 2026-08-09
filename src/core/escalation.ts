@@ -15,16 +15,24 @@ export interface EscalationVerdict {
 
 /**
  * Ниже этого объёма текста страница подозрительна — но только вместе с перекосом
- * в сторону скриптов. Измерено по фикстурам: самая скудная настоящая страница
- * (playwright-docs) даёт 3303 символа, реальная гидрируемая (substack-post) — 915.
+ * в сторону скриптов и бедной разметкой. Порог лежит между реальной гидрируемой
+ * страницей (substack-post: 915 извлечённых символов, 1033 видимых в разметке) и
+ * короткой, но настоящей серверной страницей (release notes, товар — от ~1600).
  */
-const THIN_TEXT_THRESHOLD = 2_000;
+const THIN_TEXT_THRESHOLD = 1_200;
 /**
  * Во сколько раз байты скриптов должны перевешивать извлечённый текст, чтобы
- * считать страницу оболочкой. Измерено: у настоящих страниц с тяжёлым JS
+ * заподозрить оболочку. Измерено: у настоящих страниц с тяжёлым JS
  * (github-repo, nodejs-blog) отношение не превышает 13, у substack-post — 142.
  */
 const SCRIPT_TO_TEXT_RATIO = 40;
+/**
+ * Перекос, при котором страница объявляется оболочкой без оглядки на порог текста:
+ * никакая настоящая страница столько скриптов на символ не носит (максимум по
+ * фикстурам — 12.6). Без этого выхода порог текста был бы абсолютным вето: страница
+ * с 2000 символов и полумегабайтом скриптов не эскалировала бы ни при каком перекосе.
+ */
+const PATHOLOGICAL_RATIO = 150;
 const BOT_STATUSES = new Set([403, 429, 503]);
 
 /** Технические маркеры защит. Намеренно не ищем слова в видимом тексте. */
@@ -33,9 +41,14 @@ const CHALLENGE_SIGNATURES: { name: Challenge; patterns: RegExp[] }[] = [
     name: 'cloudflare',
     patterns: [
       /window\._cf_chl_opt/i,
-      /\/cdn-cgi\/challenge-platform\//i,
       /<title[^>]*>\s*Just a moment/i,
       /cf-browser-verification/i,
+      // Только маршруты интерстишела. Голый /cdn-cgi/challenge-platform/ сюда не
+      // годится: JavaScript Detections (Bot Fight Mode) вставляет
+      // /cdn-cgi/challenge-platform/h/g/scripts/jsd/<hash>/main.js в обычные
+      // ответы 200, и по нему любая нормальная страница CF-сайта считалась бы
+      // заблокированной — агент получил бы blocked на успешно скачанной статье.
+      /\/cdn-cgi\/challenge-platform\/[^"'\s]*\/(?:orchestrate|chl_page|invisible|managed)\b/i,
     ],
   },
   {
@@ -85,19 +98,27 @@ function isTextualContentType(contentType: string | null): boolean {
   );
 }
 
-function bodyIsEmpty(html: string): boolean {
+/**
+ * Сколько видимого текста несёт сама разметка, без скриптов и стилей. Это
+ * структурный признак, независимый от извлекателя: он отличает оболочку, где
+ * текста физически нет, от страницы, где текст есть, а извлекатель оплошал.
+ */
+function visibleTextLength(html: string): number {
   const body = /<body[^>]*>([\s\S]*)<\/body>/i.exec(html)?.[1] ?? html;
-  const stripped = body
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
-  return stripped.length === 0;
+  return body
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().length;
 }
 
 export function shouldEscalate(input: EscalationInput): EscalationVerdict {
   const { status, contentType, html, extractedTextLength } = input;
 
+  // Внимание Task 9: сюда попадает и application/json — браузер не превратит его
+  // в статью, так что «эскалировать» для таких типов означает лишь «HTTP-путь тут
+  // не годится». Что делать с телом дальше, решает fetcher; это не недосмотр.
   if (!isTextualContentType(contentType)) {
     return { escalate: true, reason: 'content_type' };
   }
@@ -109,15 +130,26 @@ export function shouldEscalate(input: EscalationInput): EscalationVerdict {
     return { escalate: true, reason: 'status' };
   }
   const scripts = scriptBytes(html);
-  if (bodyIsEmpty(html)) {
+  const visible = visibleTextLength(html);
+  if (visible === 0) {
     // Ни одного видимого символа: со скриптами это оболочка, ждущая JS,
     // без них — ответ, из которого браузер тоже ничего не достанет, но
     // попытаться стоит: причина называет диагноз, а не просто «пусто».
     return { escalate: true, reason: scripts > 0 ? 'thin_spa' : 'empty_body' };
   }
+  const ratio = scripts / Math.max(extractedTextLength, 1);
+  if (ratio > PATHOLOGICAL_RATIO) {
+    return { escalate: true, reason: 'thin_spa' };
+  }
+  // Оболочкой считаем только страницу, у которой пусто по всем трём осям сразу:
+  // извлекатель нашёл мало, сама разметка несёт мало, а скрипты перевешивают.
+  // Требование к разметке обязательно: короткая, но настоящая страница (заметка,
+  // release notes, карточка товара) на Next/Nuxt носит 100+ КБ гидратации и
+  // иначе объявлялась бы оболочкой — Chromium зря, контент тот же.
   if (
     extractedTextLength < THIN_TEXT_THRESHOLD &&
-    scripts > extractedTextLength * SCRIPT_TO_TEXT_RATIO
+    visible < THIN_TEXT_THRESHOLD &&
+    ratio > SCRIPT_TO_TEXT_RATIO
   ) {
     return { escalate: true, reason: 'thin_spa' };
   }

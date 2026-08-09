@@ -81,12 +81,84 @@ describe('shouldEscalate', () => {
     ).toEqual({ escalate: true, reason: 'challenge' });
   });
 
+  it('не эскалирует при молчащем content-type, если контент на месте', () => {
+    const page = html('<article><p>' + 'слово '.repeat(400) + '</p></article>');
+    expect(shouldEscalate({ ...base, contentType: null, html: page, extractedTextLength: 2400 })).toEqual(
+      { escalate: false, reason: null },
+    );
+  });
+
+  it('при молчащем content-type судит по содержимому, а не пропускает всё подряд', () => {
+    const shell = html('<div id="root"></div><script>' + 'x'.repeat(20_000) + '</script>');
+    expect(shouldEscalate({ ...base, contentType: null, html: shell, extractedTextLength: 0 })).toEqual({
+      escalate: true,
+      reason: 'thin_spa',
+    });
+  });
+
   it('оболочку со скриптами называет thin_spa, а не empty_body', () => {
     const scriptOnly = html('<div id="root"></div><script>var t = "много текста внутри";</script>');
     expect(shouldEscalate({ ...base, html: scriptOnly, extractedTextLength: 0 })).toEqual({
       escalate: true,
       reason: 'thin_spa',
     });
+  });
+});
+
+/**
+ * Пороги — это контракт, а не деталь реализации: Task 9 платит за каждое
+ * срабатывание запуском Chromium. Границы закрепляем по обе стороны.
+ */
+describe('пороги худобы', () => {
+  /** Страница, где видимый текст ровно `text` символов, плюс скрипт на `script` байт. */
+  const page = (text: number, script: number) =>
+    html(`<article><p>${'x'.repeat(text)}</p></article><script>${'s'.repeat(script)}</script>`);
+
+  it('1199 символов при перекосе x83 — оболочка', () => {
+    expect(shouldEscalate({ ...base, html: page(1199, 100_000), extractedTextLength: 1199 })).toEqual(
+      { escalate: true, reason: 'thin_spa' },
+    );
+  });
+
+  it('1200 символов при том же перекосе — уже страница', () => {
+    expect(shouldEscalate({ ...base, html: page(1200, 100_000), extractedTextLength: 1200 })).toEqual(
+      { escalate: false, reason: null },
+    );
+  });
+
+  it('перекос чуть ниже x40 не эскалирует', () => {
+    expect(shouldEscalate({ ...base, html: page(1000, 39_000), extractedTextLength: 1000 }).escalate).toBe(
+      false,
+    );
+  });
+
+  it('перекос чуть выше x40 эскалирует', () => {
+    expect(shouldEscalate({ ...base, html: page(1000, 41_000), extractedTextLength: 1000 })).toEqual({
+      escalate: true,
+      reason: 'thin_spa',
+    });
+  });
+
+  it('патологический перекос эскалирует поверх порога текста', () => {
+    // Порог текста не должен быть абсолютным вето: 5000 символов и 800 КБ
+    // скриптов — это оболочка, сколько бы заглушек она ни отрисовала.
+    expect(shouldEscalate({ ...base, html: page(5_000, 800_000), extractedTextLength: 5_000 })).toEqual(
+      { escalate: true, reason: 'thin_spa' },
+    );
+  });
+
+  it('перекос чуть ниже патологического поверх порога не эскалирует', () => {
+    expect(
+      shouldEscalate({ ...base, html: page(5_000, 700_000), extractedTextLength: 5_000 }).escalate,
+    ).toBe(false);
+  });
+
+  it('короткая, но настоящая серверная страница с тяжёлой гидратацией — не оболочка', () => {
+    // Release notes или карточка товара на Next/Nuxt: текста мало, payload огромный.
+    // Текст лежит в разметке, а не рисуется скриптом — браузер ничего не добавит.
+    expect(
+      shouldEscalate({ ...base, html: page(1_585, 100_000), extractedTextLength: 1_585 }).escalate,
+    ).toBe(false);
   });
 });
 
@@ -125,10 +197,10 @@ describe('shouldEscalate на всех фикстурах', () => {
       (s, x) => s + x.length,
       0,
     );
-    // Листинг даёт меньше текста, чем статья: порог худобы (2000) он проходит
-    // почти вдвое, а перекос в скрипты (x40) — на три порядка.
-    expect(textLength).toBeGreaterThan(3500);
-    expect(scripts).toBeLessThan(textLength);
+    // Оси независимы, и запас нужен по каждой: порог худобы (1200) листинг
+    // проходит втрое, а до перекоса в скрипты (x40) ему три порядка.
+    expect(textLength).toBeGreaterThan(1_200 * 2);
+    expect(scripts / textLength).toBeLessThan(40 / 10);
   });
 
   it('spa-shell зовётся оболочкой, а не пустым ответом', () => {
@@ -152,6 +224,30 @@ describe('shouldEscalate на всех фикстурах', () => {
 describe('detectChallenge', () => {
   it('узнаёт Cloudflare', () => {
     expect(detectChallenge(load('cf-challenge'))).toBe('cloudflare');
+  });
+
+  it('НЕ считает заблокированной обычную страницу с JavaScript Detections от Cloudflare', () => {
+    // Bot Fight Mode вставляет этот скрипт в нормальные ответы 200. Принять его за
+    // челлендж — значит доложить агенту blocked на успешно скачанной статье.
+    const article = html(
+      '<script src="/cdn-cgi/challenge-platform/h/g/scripts/jsd/a1b2c3d4/main.js"></script>' +
+        '<article><h1>Статья</h1><p>' +
+        'слово '.repeat(1000) +
+        '</p></article>',
+    );
+    expect(detectChallenge(article)).toBeNull();
+    expect(shouldEscalate({ ...base, html: article, extractedTextLength: 6000 })).toEqual({
+      escalate: false,
+      reason: null,
+    });
+  });
+
+  it('всё ещё узнаёт настоящий интерстишел Cloudflare по маршруту orchestrate', () => {
+    const interstitial = html(
+      '<div id="challenge-running"></div>' +
+        '<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=8f"></script>',
+    );
+    expect(detectChallenge(interstitial)).toBe('cloudflare');
   });
 
   it('узнаёт DataDome', () => {
