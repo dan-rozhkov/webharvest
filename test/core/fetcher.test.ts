@@ -119,12 +119,7 @@ describe('createFetcher', () => {
   });
 
   it('следует за обычным редиректом на HTTP-уровне', async () => {
-    const base = await serve((url) => {
-      if (url === '/start') return { status: 302, type: 'text/plain', body: '' };
-      return { body: article };
-    });
-    server!.removeAllListeners('request');
-    server!.on('request', (req, res) => {
+    server = createServer((req, res) => {
       if (req.url === '/start') {
         res.writeHead(302, { location: '/target' });
         res.end();
@@ -133,6 +128,9 @@ describe('createFetcher', () => {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(article);
     });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    const base = `http://127.0.0.1:${port}`;
     const browser = fakeBrowser(article);
     const f = createFetcher(deps(browser));
     const r = await f.fetch(base + '/start');
