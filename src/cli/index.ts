@@ -43,13 +43,49 @@ async function waitUp(attempts = 20): Promise<boolean> {
   return false;
 }
 
+/** Verify that a PID still belongs to our daemon process.
+ *  Before signalling a PID from the pidFile, confirm it hasn't been reused by an unrelated process.
+ *  Returns true if the PID is valid for our daemon, false if stale/invalid.
+ *  Cleans up the stale pidFile if verification fails. */
+function verifyPidBelongsToDaemon(pid: string): boolean {
+  try {
+    const commandLine = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf8' }).trim();
+    // Check if the command line contains our daemon path
+    if (commandLine.includes(daemonPath)) {
+      return true;
+    }
+    // PID was reused; remove stale pidFile
+    try {
+      rmSync(pidFile);
+    } catch {
+      // pidFile already gone
+    }
+    return false;
+  } catch {
+    // ps failed (PID doesn't exist); clean up
+    try {
+      rmSync(pidFile);
+    } catch {
+      // pidFile already gone
+    }
+    return false;
+  }
+}
+
 const commands: Record<string, () => Promise<void>> = {
   async start() {
     if (await isUp()) return console.log('Демон уже работает.');
 
-    // If plist is installed, delegate to launchd
+    // If plist is installed, ensure job is loaded and start it via launchd
     if (existsSync(plistPath)) {
       try {
+        // Try to load the job in case it was unloaded by stop
+        try {
+          execFileSync('launchctl', ['load', '-w', plistPath], { stdio: 'ignore' });
+        } catch {
+          // Job may already be loaded, that's fine
+        }
+        // Now start the job
         execFileSync('launchctl', ['start', LABEL]);
         console.log(await waitUp() ? `Демон запущен через launchd: ${baseUrl}` : `Демон не поднялся, смотри ${logPath}`);
       } catch (err) {
@@ -92,21 +128,30 @@ const commands: Record<string, () => Promise<void>> = {
           // Neither works; plist may not be loaded. That's fine.
         }
       }
+      // Clear any stale pidFile from a previous manual start
+      try {
+        rmSync(pidFile);
+      } catch {
+        // pidFile doesn't exist, that's fine
+      }
     }
 
     // For daemons started manually (not via install), use the recorded PID if available.
     if (existsSync(pidFile)) {
+      const pid = readFileSync(pidFile, 'utf8').trim();
+      // Verify the PID still belongs to our daemon (not reused by another process)
+      if (verifyPidBelongsToDaemon(pid)) {
+        try {
+          execFileSync('kill', [pid]);
+        } catch {
+          // Process already dead or permissions issue
+        }
+      }
+      // Clean up the pidFile regardless (verifyPidBelongsToDaemon removes it if invalid)
       try {
-        const pid = readFileSync(pidFile, 'utf8').trim();
-        execFileSync('kill', [pid]);
         rmSync(pidFile);
       } catch {
-        // PID may be stale. Try pkill as last resort.
-        try {
-          execFileSync('pkill', ['-f', daemonPath], { stdio: 'ignore' });
-        } catch {
-          // No process found or already dead.
-        }
+        // Already removed
       }
     }
 
@@ -142,6 +187,12 @@ const commands: Record<string, () => Promise<void>> = {
         port: config.port,
       }),
     );
+    // Clear any stale pidFile from a previous manual start
+    try {
+      rmSync(pidFile);
+    } catch {
+      // pidFile doesn't exist, that's fine
+    }
     // First unload to clear any existing Disabled override
     try {
       execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
