@@ -47,12 +47,66 @@ export function createFetcher(deps: FetcherDeps) {
     return u;
   }
 
-  /** Один HTTP-запрос без автоследования за редиректами: undici сам ходит по
-   *  Location до maxRedirections, но для этого нужен предварительно
-   *  провалидированный URL на каждом хопе — иначе SSRF-проверка исходного
-   *  адреса ничего не гарантирует про адрес, куда сервер решит перенаправить.
-   *  Поэтому редиректы разбираются вручную здесь, а не отдаются undici. */
-  async function httpGet(startUrl: string): Promise<{
+  /** Ставит операцию в очередь конкретного хоста — но только если слот этого
+   *  хоста ещё не удерживается где-то выше по цепочке текущего fetch(). Это
+   *  и есть политес по хосту-получателю (не по хосту, с которого начался
+   *  редирект), и одновременно защита от самозаклинивания: DomainQueue.run
+   *  вложенный сам в себя для ОДНОГО И ТОГО ЖЕ хоста может дедлокнуться —
+   *  если у хоста maxConcurrent слотов уже заняты внешними (ещё не
+   *  завершившимися) вызовами run, а вложенный вызов ждёт освобождения
+   *  слота, который освободится только после завершения этого самого
+   *  вложенного вызова. Цепочка a.com → b.com → a.com — ровно этот случай:
+   *  без heldHosts третий хоп запросил бы слот a.com повторно, хотя внешний
+   *  вызов уже держит его открытым, и вся операция зависла бы навсегда.
+   *  heldHosts — это множество хостов, чьи слоты уже открыты где-то в
+   *  текущей цепочке (не только непосредственным родителем), поэтому хоп
+   *  назад на a.com узнаётся и выполняется без повторного захвата. Цена:
+   *  такой хоп не получает отдельного тайминга/лимита очереди — он просто
+   *  выполняется сразу под уже открытым слотом. Для одиночного зацикленного
+   *  редиректа это осознанный компромисс: безопасность важнее точности
+   *  политеса на патологическом случае.
+   */
+  async function withHostQueue<T>(host: string, heldHosts: Set<string>, fn: () => Promise<T>): Promise<T> {
+    if (heldHosts.has(host)) return fn();
+    heldHosts.add(host);
+    return deps.queue.run(host, fn);
+  }
+
+  async function performRequest(url: string) {
+    try {
+      return await request(url, {
+        method: 'GET',
+        maxRedirections: 0,
+        headersTimeout: httpTimeoutMs,
+        bodyTimeout: httpTimeoutMs,
+        headers: {
+          'user-agent': USER_AGENT,
+          accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'accept-language': 'en-US,en;q=0.9,ru;q=0.8',
+        },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/timeout|UND_ERR_(HEADERS|BODY)_TIMEOUT/i.test(msg)) {
+        throw new HarvestError('timeout', `Сервер не ответил за ${httpTimeoutMs} мс: ${url}`);
+      }
+      throw new HarvestError('network', `Не удалось загрузить ${url}: ${msg}`);
+    }
+  }
+
+  /** Один логический GET без автоследования undici за редиректами: undici
+   *  сам ходит по Location до maxRedirections, но для этого нужен
+   *  предварительно провалидированный URL на каждом хопе — иначе
+   *  SSRF-проверка исходного адреса ничего не гарантирует про адрес, куда
+   *  сервер решит перенаправить. Поэтому редиректы разбираются вручную
+   *  здесь, а не отдаются undici; и каждый хоп идёт через очередь СВОЕГО
+   *  хоста (withHostQueue), а не хоста, с которого стартовал fetch —
+   *  редиректор (шортлинк, AMP/utm-гейтвей) не должен давать вызывающему
+   *  обходить политес целевого сайта. */
+  async function httpGet(
+    startUrl: string,
+    heldHosts: Set<string>,
+  ): Promise<{
     html: string;
     finalUrl: string;
     status: number;
@@ -61,26 +115,8 @@ export function createFetcher(deps: FetcherDeps) {
     let currentUrl = startUrl;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      let res;
-      try {
-        res = await request(currentUrl, {
-          method: 'GET',
-          maxRedirections: 0,
-          headersTimeout: httpTimeoutMs,
-          bodyTimeout: httpTimeoutMs,
-          headers: {
-            'user-agent': USER_AGENT,
-            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-language': 'en-US,en;q=0.9,ru;q=0.8',
-          },
-        });
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (/timeout|UND_ERR_(HEADERS|BODY)_TIMEOUT/i.test(msg)) {
-          throw new HarvestError('timeout', `Сервер не ответил за ${httpTimeoutMs} мс: ${currentUrl}`);
-        }
-        throw new HarvestError('network', `Не удалось загрузить ${currentUrl}: ${msg}`);
-      }
+      const hopHost = new URL(currentUrl).hostname;
+      const res = await withHostQueue(hopHost, heldHosts, () => performRequest(currentUrl));
 
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         // dump(), не destroy(): на неполностью прочитанном BodyReadable undici
@@ -120,14 +156,18 @@ export function createFetcher(deps: FetcherDeps) {
   async function fetch(rawUrl: string): Promise<FetchResult> {
     const u = await validate(rawUrl);
     const host = u.hostname;
+    // Хосты, чей слот очереди уже открыт где-то в этой цепочке (см.
+    // withHostQueue) — затравлен исходным хостом, потому что fetch() сам
+    // держит его слот на всё время своего выполнения.
+    const heldHosts = new Set<string>([host]);
 
     return deps.queue.run(host, async () => {
       // Домен уже показал, что без браузера не отдаётся — не тратим HTTP-запрос.
       if (deps.hints.needsBrowser(host)) {
-        return renderViaBrowser(u.toString());
+        return renderViaBrowser(u.toString(), heldHosts);
       }
 
-      const attempt = await httpGet(u.toString());
+      const attempt = await httpGet(u.toString(), heldHosts);
       const probe = extract(attempt.html, attempt.finalUrl);
       const verdict = shouldEscalate({
         status: attempt.status,
@@ -145,14 +185,27 @@ export function createFetcher(deps: FetcherDeps) {
       // времени и ещё один сетевой запрос. Это не домен нуждается в браузере,
       // это конкретный ответ не годится для извлечения — hint не пишем.
       if (verdict.reason === 'content_type') {
+        // shouldEscalate проверяет content-type раньше challenge-маркеров,
+        // так что защита, отданная под нетекстовым content-type, тоже
+        // получила бы reason 'content_type' и ушла бы как not_html — агент
+        // узнал бы "не HTML" вместо "заблокировано Cloudflare". Перепроверяем
+        // явно, прежде чем поверить content-type на слово.
+        const challenge = detectChallenge(attempt.html);
+        if (challenge) {
+          throw new HarvestError('blocked', `Страница закрыта защитой ${challenge}: ${attempt.finalUrl}`, {
+            by: challenge,
+          });
+        }
         throw new HarvestError('not_html', `Ответ не похож на HTML: ${attempt.finalUrl}`, {
           reason: verdict.reason,
           contentType: attempt.contentType,
         });
       }
 
-      deps.hints.markNeedsBrowser(host);
-      return renderViaBrowser(u.toString(), {
+      // attempt.finalUrl, а не исходный url: если HTTP-путь уже прошёл через
+      // редиректы, браузер должен рендерить конечный адрес, а не заново
+      // проходить всю цепочку с нуля.
+      return renderViaBrowser(attempt.finalUrl, heldHosts, {
         challenge: detectChallenge(attempt.html),
         contentType: attempt.contentType,
       });
@@ -161,44 +214,59 @@ export function createFetcher(deps: FetcherDeps) {
 
   async function renderViaBrowser(
     url: string,
+    heldHosts: Set<string>,
     context: { challenge?: ReturnType<typeof detectChallenge>; contentType?: string | null } = {},
   ): Promise<FetchResult> {
-    const rendered = await deps.browser.render(url, { timeoutMs: browserTimeoutMs });
-    // Браузер тоже может быть перенаправлен (в т.ч. на приватный адрес по
-    // цепочке редиректов внутри страницы) — finalUrl проверяем так же строго,
-    // как и HTTP-хопы.
-    await validate(rendered.finalUrl);
+    // Хост, чьё содержимое реально потребовало эскалации (URL после
+    // HTTP-редиректов) — не обязательно исходный хост fetch(). Именно на
+    // него ставим slot очереди и именно его помечаем в hints при успехе,
+    // иначе a.com получал бы клеймо "нужен браузер" из-за того, что
+    // редиректящий его b.com оказался SPA.
+    const targetHost = new URL(url).hostname;
 
-    const stillChallenged = detectChallenge(rendered.html);
-    if (stillChallenged) {
-      throw new HarvestError('blocked', `Страница закрыта защитой ${stillChallenged}: ${url}`, {
-        by: stillChallenged,
-      });
-    }
+    return withHostQueue(targetHost, heldHosts, async () => {
+      const rendered = await deps.browser.render(url, { timeoutMs: browserTimeoutMs });
+      // Браузер тоже может быть перенаправлен (в т.ч. на приватный адрес по
+      // цепочке редиректов внутри страницы) — finalUrl проверяем так же строго,
+      // как и HTTP-хопы.
+      await validate(rendered.finalUrl);
 
-    const probe = extract(rendered.html, rendered.finalUrl);
-    const verdict = shouldEscalate({
-      status: rendered.status,
-      contentType: 'text/html',
-      html: rendered.html,
-      extractedTextLength: probe.textLength,
-    });
-
-    // Браузер — последняя инстанция. Если и он не дал текста, честно сообщаем,
-    // а не отдаём пустоту или заглушку как контент.
-    if (verdict.escalate) {
-      if (context.challenge) {
-        throw new HarvestError('blocked', `Страница закрыта защитой ${context.challenge}: ${url}`, {
-          by: context.challenge,
+      const stillChallenged = detectChallenge(rendered.html);
+      if (stillChallenged) {
+        throw new HarvestError('blocked', `Страница закрыта защитой ${stillChallenged}: ${url}`, {
+          by: stillChallenged,
         });
       }
-      throw new HarvestError('not_html', `На странице не нашлось читаемого текста: ${url}`, {
-        reason: verdict.reason,
-        contentType: context.contentType ?? null,
-      });
-    }
 
-    return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser' };
+      const probe = extract(rendered.html, rendered.finalUrl);
+      const verdict = shouldEscalate({
+        status: rendered.status,
+        contentType: 'text/html',
+        html: rendered.html,
+        extractedTextLength: probe.textLength,
+      });
+
+      // Браузер — последняя инстанция. Если и он не дал текста, честно сообщаем,
+      // а не отдаём пустоту или заглушку как контент.
+      if (verdict.escalate) {
+        if (context.challenge) {
+          throw new HarvestError('blocked', `Страница закрыта защитой ${context.challenge}: ${url}`, {
+            by: context.challenge,
+          });
+        }
+        throw new HarvestError('not_html', `На странице не нашлось читаемого текста: ${url}`, {
+          reason: verdict.reason,
+          contentType: context.contentType ?? null,
+        });
+      }
+
+      // Пишем hint только теперь, когда браузер реально спас контент. Если бы
+      // мы писали его перед рендером (как раньше), постоянно заблокированный
+      // домен жёг бы полный браузерный рендер на каждый запрос все 24 часа
+      // TTL, хотя и дешёвый HTTP-путь всё равно закончился бы тем же blocked.
+      deps.hints.markNeedsBrowser(targetHost);
+      return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser' };
+    });
   }
 
   return { fetch };
