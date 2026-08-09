@@ -14,6 +14,24 @@ describe('stripTags', () => {
     expect(stripTags('Rust: Vec<T> is a growable array')).toBe('Rust: Vec<T> is a growable array');
   });
 
+  it('не трогает generic-тип с многобуквенным параметром (Vec<Type>)', () => {
+    expect(stripTags('Vec<Type> parameter')).toBe('Vec<Type> parameter');
+  });
+
+  it('не трогает generic-тип List<int> в прозе про C#', () => {
+    expect(stripTags('List<int> in C#')).toBe('List<int> in C#');
+  });
+
+  it('не трогает generic-тип с двумя параметрами (Result<T, Error>)', () => {
+    expect(stripTags('Result<T, Error> is the standard error type')).toBe(
+      'Result<T, Error> is the standard error type',
+    );
+  });
+
+  it('не трогает generic-тип HashMap<K, V>', () => {
+    expect(stripTags('HashMap<K, V> stores key-value pairs')).toBe('HashMap<K, V> stores key-value pairs');
+  });
+
   it('не трогает shell-редиректы', () => {
     expect(stripTags('run: cmd < input.txt > output.txt')).toBe('run: cmd < input.txt > output.txt');
   });
@@ -42,8 +60,32 @@ describe('stripTags', () => {
     expect(stripTags('<Mark>mixed</Mark> case')).toBe('mixed case');
   });
 
+  it.each(['span', 'strong', 'b', 'em', 'i', 'mark', 'u', 'small', 'code', 'a', 'p', 'div', 'sup', 'sub', 'del', 'ins', 'font'])(
+    'вырезает известный тег <%s> в нижнем, верхнем и смешанном регистре',
+    (tag) => {
+      const mixed = tag.length > 1 ? tag[0]!.toUpperCase() + tag.slice(1) : tag.toUpperCase();
+      expect(stripTags(`<${tag}>x</${tag}>`)).toBe('x');
+      expect(stripTags(`<${tag.toUpperCase()}>x</${tag.toUpperCase()}>`)).toBe('x');
+      expect(stripTags(`<${mixed}>x</${mixed}>`)).toBe('x');
+    },
+  );
+
+  it('вырезает самозакрывающиеся теги br и wbr', () => {
+    expect(stripTags('line1<br>line2')).toBe('line1line2');
+    expect(stripTags('long<wbr>word')).toBe('longword');
+    expect(stripTags('LINE1<BR>LINE2')).toBe('LINE1LINE2');
+  });
+
   it('вырезает тег с котированным атрибутом, содержащим ">"', () => {
     expect(stripTags('<a title="a>b">текст</a>')).toBe('текст');
+  });
+
+  it('вырезает тег с атрибутом в одинарных кавычках, содержащим ">"', () => {
+    expect(stripTags("<a title='a>b'>текст</a>")).toBe('текст');
+  });
+
+  it('вырезает вложенные теги', () => {
+    expect(stripTags('<em><strong>совпадение</strong></em> текст')).toBe('совпадение текст');
   });
 
   it('вырезает оборванный тег в конце строки', () => {
@@ -52,6 +94,18 @@ describe('stripTags', () => {
 
   it('вырезает оборванный закрывающий тег в конце строки', () => {
     expect(stripTags('текст </sp')).toBe('текст');
+  });
+
+  it('вырезает оборванный тег foo <strong в конце строки', () => {
+    expect(stripTags('foo <strong')).toBe('foo');
+  });
+
+  it('вырезает оборванный закрывающий тег foo </STRONG в верхнем регистре', () => {
+    expect(stripTags('foo </STRONG')).toBe('foo');
+  });
+
+  it('не трогает entity-encoded &lt;strong&gt; (это не настоящий тег)', () => {
+    expect(stripTags('&lt;strong&gt;текст&lt;/strong&gt;')).toBe('&lt;strong&gt;текст&lt;/strong&gt;');
   });
 
   it('обрезает пробелы по краям после вырезания тегов', () => {

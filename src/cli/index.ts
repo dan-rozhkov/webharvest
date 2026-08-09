@@ -5,24 +5,20 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { request } from 'undici';
-import { loadConfig } from '../daemon/config.js';
 import { plistContents, LABEL } from './launchd.js';
 import { reconcileBeforeInstall, stopManualDaemon } from './daemon-process.js';
 import { openLogSink, describeLogsAvailability } from './log-file.js';
+import { loadConfigSafe } from './load-config-safe.js';
 
-// loadConfig() fails loudly on an invalid config (e.g. a malformed
-// WEBHARVEST_PORT) — that's the right call for the daemon, which should
-// never silently fall back to a wrong port. But the CLI is also how an
-// operator recovers from exactly that kind of typo (e.g. `webharvest stop`),
-// so it must not die with a raw Node stack trace: print the message through
-// the CLI's own formatting and exit 1 instead.
-let config;
-try {
-  config = loadConfig();
-} catch (err) {
-  console.error(err instanceof Error ? err.message : String(err));
+// See load-config-safe.ts for why this is split out and caught here rather
+// than left to loadConfig()'s own throw: the CLI must not die with a raw
+// Node stack trace on an operator's typo (e.g. a malformed WEBHARVEST_PORT).
+const configResult = loadConfigSafe();
+if (!configResult.ok) {
+  console.error(configResult.message);
   process.exit(1);
 }
+const config = configResult.config;
 const here = dirname(fileURLToPath(import.meta.url));
 const daemonPath = resolve(here, '../daemon/index.js');
 const home = join(homedir(), '.webharvest');
