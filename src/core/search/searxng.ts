@@ -1,4 +1,5 @@
 import { request } from 'undici';
+import { stripTags } from './strip-tags.js';
 import type { SearchProvider, SearchResult } from './types.js';
 
 interface SearxngRaw {
@@ -14,8 +15,12 @@ export function parseSearxng(raw: unknown, limit: number): SearchResult[] {
     .slice(0, limit)
     .map((r) => ({
       url: r.url!,
-      title: (r.title ?? '').trim(),
-      snippet: (r.content ?? '').trim(),
+      // Some SearXNG engines return snippets with markup (e.g. Google's
+      // <span class="highlight">query</span> around matched terms) — Brave's
+      // provider already stripped its own tags; SearXNG's didn't, so those
+      // fragments landed verbatim in the agent's context.
+      title: stripTags(r.title ?? ''),
+      snippet: stripTags(r.content ?? ''),
       engine: `searxng:${r.engine ?? 'unknown'}`,
     }));
 }

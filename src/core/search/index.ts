@@ -27,9 +27,17 @@ export function createSearch(providers: SearchProvider[]) {
   return {
     async search(query: string, limit: number): Promise<SearchResult[]> {
       const failures: string[] = [];
+      // Ask the provider for more than `limit`, not exactly `limit`: each
+      // provider already slices its own raw response down to `limit` before
+      // we ever see it, so if dedupeResults() then drops any of those as
+      // trackingparam/near-duplicate URLs, the final count silently shrinks
+      // below what the caller asked for. Padding leaves dedupe room to drop
+      // some and still hit `limit`, without ourselves quietly returning
+      // fewer results than requested.
+      const fetchLimit = Math.min(limit * 2, 20);
       for (const p of providers) {
         try {
-          const results = dedupeResults(await p.search(query, limit));
+          const results = dedupeResults(await p.search(query, fetchLimit));
           if (results.length > 0) return results.slice(0, limit);
           failures.push(`${p.name}: пустая выдача`);
         } catch (e) {

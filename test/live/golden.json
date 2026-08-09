@@ -7,6 +7,6 @@
   { "url": "https://nodejs.org/en/about", "minChars": 800, "titleIncludes": "Node.js" },
   { "url": "https://github.com/microsoft/playwright", "minChars": 800, "titleIncludes": "playwright" },
   { "url": "https://news.ycombinator.com/", "minChars": 500, "titleIncludes": "Hacker News" },
-  { "url": "https://blog.cloudflare.com/", "minChars": 500, "titleIncludes": "" },
+  { "url": "https://blog.cloudflare.com/", "minChars": 500, "titleIncludes": "Cloudflare" },
   { "url": "https://www.typescriptlang.org/", "minChars": 500, "titleIncludes": "TypeScript" }
 ]

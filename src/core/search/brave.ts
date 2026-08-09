@@ -1,15 +1,10 @@
 import { request } from 'undici';
+import { stripTags } from './strip-tags.js';
 import type { SearchProvider, SearchResult } from './types.js';
 
 interface BraveRaw {
   web?: { results?: { url?: string; title?: string; description?: string }[] };
 }
-
-const stripTags = (s: string) =>
-  s
-    .replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '') // complete tags with quoted attributes
-    .replace(/<\/?[a-zA-Z][^>]*$/, '') // truncated tag start at end (< followed by letter or </)
-    .trim();
 
 export function parseBrave(raw: unknown, limit: number): SearchResult[] {
   const data = (raw ?? {}) as BraveRaw;

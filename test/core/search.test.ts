@@ -36,6 +36,20 @@ describe('parseSearxng', () => {
   it('не падает когда results число вместо массива', () => {
     expect(parseSearxng({ results: 42 }, 5)).toEqual([]);
   });
+
+  it('вычищает HTML-разметку из сниппета (некоторые движки SearXNG отдают <span class="highlight">)', () => {
+    const r = parseSearxng({
+      results: [
+        {
+          url: 'https://example.com',
+          title: 'Заголовок',
+          content: 'до <span class="highlight">выделенное</span> после',
+          engine: 'google',
+        },
+      ],
+    }, 10);
+    expect(r[0]!.snippet).toBe('до выделенное после');
+  });
 });
 
 describe('parseBrave', () => {
@@ -183,6 +197,40 @@ describe('createSearch', () => {
       provider('b', async () => [{ url: 'https://y/', title: 't', snippet: '', engine: 'b' }]),
     ]);
     expect(await s.search('q', 5)).toHaveLength(1);
+  });
+
+  it('запрашивает у провайдера больше, чем limit — иначе дедуп срезает итог ниже запрошенного', async () => {
+    const spy = vi.fn(async () => [] as SearchResult[]);
+    const s = createSearch([provider('a', spy)]);
+    await s.search('q', 5).catch(() => {}); // empty response -> search_unavailable; only the call args matter here
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('q', 10);
+  });
+
+  it('не запрашивает у провайдера больше 20 даже для большого limit', async () => {
+    const spy = vi.fn(async () => [] as SearchResult[]);
+    const s = createSearch([provider('a', spy)]);
+    await s.search('q', 15).catch(() => {});
+    expect(spy).toHaveBeenCalledWith('q', 20);
+  });
+
+  it('итог поиска не проседает ниже limit из-за дедупа, если провайдер отдал запас', async () => {
+    const richProvider: SearchProvider = {
+      name: 'a',
+      async search(_query, fetchLimit) {
+        // 5 unique URLs, repeated across the padded response — collapses
+        // under dedupe, but there's enough raw supply to still hit 5.
+        return Array.from({ length: fetchLimit }, (_, i) => ({
+          url: `https://x.com/${i % 5}`,
+          title: `t${i}`,
+          snippet: '',
+          engine: 'a',
+        }));
+      },
+    };
+    const s = createSearch([richProvider]);
+    const results = await s.search('q', 5);
+    expect(results).toHaveLength(5);
   });
 
   it('бросает search_unavailable с перечислением отказов', async () => {
