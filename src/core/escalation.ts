@@ -101,7 +101,10 @@ function scriptBytes(html: string): number {
   return (html.match(/<script[\s\S]*?<\/script>/gi) ?? []).reduce((sum, s) => sum + s.length, 0);
 }
 
-function isTextualContentType(contentType: string | null): boolean {
+/** Exported so fetcher.ts can gate on content-type BEFORE running extract() —
+ *  a binary body should never be decoded to UTF-8 and pushed through JSDOM
+ *  just to have shouldEscalate() throw the result away a moment later. */
+export function isTextualContentType(contentType: string | null): boolean {
   if (!contentType) return true; // сервер промолчал — считаем текстом и проверим по содержимому
   const t = contentType.toLowerCase();
   return (

@@ -383,6 +383,55 @@ describe('createFetcher', () => {
     await expect(f.fetch(base + '/api')).rejects.toMatchObject({ code: 'not_html' });
     expect(browser.calls).toBe(0);
   });
+
+  it('репортит upstream_error (не not_html), когда браузер довёл бот-статус без узнаваемой защиты', async () => {
+    // Стилизованная 403 без сигнатур challenge, но с настоящим текстом на
+    // странице: shouldEscalate() эскалирует по reason 'status', а не по
+    // content_type/challenge, так что и после рендера в браузере — тоже.
+    // Раньше это заворачивалось в not_html "нет читаемого текста", что было
+    // ложью: текст на странице есть, просто сервер явно ответил ошибкой.
+    // fakeBrowser() hardcodes status 200, so this needs its own stub that
+    // actually carries the 403 through the browser render, the way a real
+    // Playwright response would.
+    const styled403 = '<html><body><h1>Доступ запрещён</h1><p>Обратитесь к администратору сайта.</p></body></html>';
+    const base = await serve(() => ({ status: 403, body: styled403 }));
+    const browser = {
+      calls: 0,
+      async render(url: string) {
+        browser.calls++;
+        return { html: styled403, finalUrl: url, status: 403 };
+      },
+      async shutdown() {},
+      isRunning: () => false,
+    };
+    const f = createFetcher(deps(browser));
+    const err = await f.fetch(base + '/').catch((e) => e);
+    expect(err).toMatchObject({ code: 'upstream_error', detail: { status: 403 } });
+  });
+
+  it('всё ещё репортит blocked (не upstream_error), если исходный challenge пережил рендер под бот-статусом 403', async () => {
+    // Ordering must not regress: even though the browser's own render also
+    // comes back 403 (which alone would classify as reason:'status'), the
+    // page carried a real challenge signature on the original HTTP attempt
+    // (context.challenge) — that must still win and report blocked, not the
+    // new upstream_error path.
+    const challenge = '<html><head><title>Just a moment...</title></head><body><script>window._cf_chl_opt={}</script></body></html>';
+    const base = await serve(() => ({ status: 403, body: challenge }));
+    // Browser output has no challenge markers left and no text either, but
+    // still answers 403 - shouldEscalate() alone would call this 'status'.
+    const stillEmpty = '<html><body><div id="root"></div></body></html>';
+    const browser = {
+      calls: 0,
+      async render(url: string) {
+        browser.calls++;
+        return { html: stillEmpty, finalUrl: url, status: 403 };
+      },
+      async shutdown() {},
+      isRunning: () => false,
+    };
+    const f = createFetcher(deps(browser));
+    await expect(f.fetch(base + '/')).rejects.toMatchObject({ code: 'blocked', detail: { by: 'cloudflare' } });
+  });
 });
 
 describe('DomainHints', () => {
@@ -394,5 +443,29 @@ describe('DomainHints', () => {
     vi.advanceTimersByTime(1500);
     expect(h.needsBrowser('a.com')).toBe(false);
     vi.useRealTimers();
+  });
+
+  it('TTL hint-а истекает несмотря на повторные успешные рендеры через браузер по этому же hint-у', async () => {
+    // Regression: renderViaBrowser used to call markNeedsBrowser() on every
+    // successful render, including one selected BECAUSE the hint was
+    // already set - so a domain scraped more often than the TTL window
+    // never actually saw the hint expire, contradicting DomainHints' own
+    // doc comment ("запись стирается по TTL, чтобы домен получал новый шанс
+    // на дешёвый HTTP-путь"). No real HTTP server needed here: once the
+    // hint is set, fetch() goes straight to renderViaBrowser and never
+    // touches httpGet.
+    const browser = fakeBrowser(article);
+    const hints = new DomainHints(200);
+    hints.markNeedsBrowser('127.0.0.1');
+    const f = createFetcher({ queue: new DomainQueue({ minIntervalMs: 0 }), browser, hints, allowPrivate: true });
+
+    await f.fetch('http://127.0.0.1/a');
+    await new Promise((r) => setTimeout(r, 120));
+    // Still within the original 200ms TTL - this call must not reset the
+    // clock, even though it succeeds via the browser.
+    await f.fetch('http://127.0.0.1/b');
+    await new Promise((r) => setTimeout(r, 120)); // total elapsed since markNeedsBrowser: ~240ms > 200ms TTL
+    expect(hints.needsBrowser('127.0.0.1')).toBe(false);
+    expect(browser.calls).toBe(2);
   });
 });

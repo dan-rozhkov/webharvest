@@ -2,7 +2,7 @@ import { request } from 'undici';
 import { HarvestError } from './errors.js';
 import { assertAllowedUrl, assertPublicHost } from './url.js';
 import { extract, type Extracted } from './extractor.js';
-import { shouldEscalate, detectChallenge } from './escalation.js';
+import { shouldEscalate, detectChallenge, isTextualContentType } from './escalation.js';
 import type { DomainQueue } from './politeness.js';
 import type { BrowserPool } from './browser.js';
 import { DomainHints } from './domain-hints.js';
@@ -180,11 +180,43 @@ export function createFetcher(deps: FetcherDeps) {
 
     return deps.queue.run(host, async () => {
       // Домен уже показал, что без браузера не отдаётся — не тратим HTTP-запрос.
+      // skipHintUpdate: этот рендер выбран ПОТОМУ ЧТО hint уже стоит, а не
+      // потому что он его заслужил заново — не должен продлевать TTL (см.
+      // markNeedsBrowser ниже).
       if (deps.hints.needsBrowser(host)) {
-        return renderViaBrowser(u.toString(), heldHosts);
+        return renderViaBrowser(u.toString(), heldHosts, { skipHintUpdate: true });
       }
 
       const attempt = await httpGet(u.toString(), heldHosts);
+
+      // Content-type проверяем ДО extract(): бинарное тело (PDF, картинка,
+      // ...) до 5 МБ иначе декодируется в UTF-8 и прогоняется через четыре
+      // прохода JSDOM только для того, чтобы результат тут же выбросить —
+      // shouldEscalate() всё равно завернёт его чуть ниже по этой же причине.
+      // Отсутствующий content-type (isTextualContentType(null) === true)
+      // по-прежнему считается текстом и идёт по обычному пути.
+      if (!isTextualContentType(attempt.contentType)) {
+        // application/json (и прочий нетекстовый content-type) браузер не
+        // спасёт: рендерить страницу, чтобы получить тот же JSON, — чистые
+        // потери времени и ещё один сетевой запрос. Это не домен нуждается
+        // в браузере, это конкретный ответ не годится для извлечения — hint
+        // не пишем.
+        //
+        // Но защита, отданная под нетекстовым content-type, тоже не HTML —
+        // агент узнал бы "не HTML" вместо "заблокировано Cloudflare", если
+        // не перепроверить явно, прежде чем поверить content-type на слово.
+        const challenge = detectChallenge(attempt.html);
+        if (challenge) {
+          throw new HarvestError('blocked', `Страница закрыта защитой ${challenge}: ${attempt.finalUrl}`, {
+            by: challenge,
+          });
+        }
+        throw new HarvestError('not_html', `Ответ не похож на HTML: ${attempt.finalUrl}`, {
+          reason: 'content_type',
+          contentType: attempt.contentType,
+        });
+      }
+
       const probe = extract(attempt.html, attempt.finalUrl);
       const verdict = shouldEscalate({
         status: attempt.status,
@@ -195,28 +227,6 @@ export function createFetcher(deps: FetcherDeps) {
 
       if (!verdict.escalate) {
         return { html: attempt.html, finalUrl: attempt.finalUrl, status: attempt.status, via: 'http', extracted: probe };
-      }
-
-      // application/json (и прочий нетекстовый content-type) браузер не спасёт:
-      // рендерить страницу, чтобы получить тот же JSON, — чистые потери
-      // времени и ещё один сетевой запрос. Это не домен нуждается в браузере,
-      // это конкретный ответ не годится для извлечения — hint не пишем.
-      if (verdict.reason === 'content_type') {
-        // shouldEscalate проверяет content-type раньше challenge-маркеров,
-        // так что защита, отданная под нетекстовым content-type, тоже
-        // получила бы reason 'content_type' и ушла бы как not_html — агент
-        // узнал бы "не HTML" вместо "заблокировано Cloudflare". Перепроверяем
-        // явно, прежде чем поверить content-type на слово.
-        const challenge = detectChallenge(attempt.html);
-        if (challenge) {
-          throw new HarvestError('blocked', `Страница закрыта защитой ${challenge}: ${attempt.finalUrl}`, {
-            by: challenge,
-          });
-        }
-        throw new HarvestError('not_html', `Ответ не похож на HTML: ${attempt.finalUrl}`, {
-          reason: verdict.reason,
-          contentType: attempt.contentType,
-        });
       }
 
       // attempt.finalUrl, а не исходный url: если HTTP-путь уже прошёл через
@@ -232,7 +242,17 @@ export function createFetcher(deps: FetcherDeps) {
   async function renderViaBrowser(
     url: string,
     heldHosts: Set<string>,
-    context: { challenge?: ReturnType<typeof detectChallenge>; contentType?: string | null } = {},
+    context: {
+      challenge?: ReturnType<typeof detectChallenge>;
+      contentType?: string | null;
+      /** True when this render was selected BECAUSE deps.hints.needsBrowser()
+       *  was already true, not because this call is what earned the hint.
+       *  A success here must not re-mark the domain — DomainHints' TTL exists
+       *  to give a marked domain a fresh shot at the cheap HTTP path, and a
+       *  domain scraped at least once per TTL window would otherwise never
+       *  see that clock actually reach zero. */
+      skipHintUpdate?: boolean;
+    } = {},
   ): Promise<FetchResult> {
     // Хост, чьё содержимое реально потребовало эскалации (URL после
     // HTTP-редиректов) — не обязательно исходный хост fetch(). Именно на
@@ -271,17 +291,33 @@ export function createFetcher(deps: FetcherDeps) {
             by: context.challenge,
           });
         }
+        // Бот-статусы (403/429/503) без узнаваемой сигнатуры защиты — не
+        // "нет текста", а конкретный ответ сервера. Иначе стилизованная
+        // 403-страница со своим текстом сообщила бы агенту неправду:
+        // "на странице не нашлось читаемого текста", хотя текст там есть,
+        // просто origin явно отказал.
+        if (verdict.reason === 'status') {
+          throw new HarvestError('upstream_error', `Сервер вернул ошибку ${rendered.status}: ${url}`, {
+            status: rendered.status,
+          });
+        }
         throw new HarvestError('not_html', `На странице не нашлось читаемого текста: ${url}`, {
           reason: verdict.reason,
           contentType: context.contentType ?? null,
         });
       }
 
-      // Пишем hint только теперь, когда браузер реально спас контент. Если бы
+      // Пишем hint только теперь, когда браузер реально спас контент, и
+      // только если этот рендер сам заслужил hint, а не был выбран по уже
+      // стоящему (см. skipHintUpdate) — иначе домен, который скрейпят чаще,
+      // чем раз в TTL, никогда не увидит эти 24 часа истёкшими и навсегда
+      // останется приколот к браузеру, даже перестав нуждаться в JS. Если бы
       // мы писали его перед рендером (как раньше), постоянно заблокированный
       // домен жёг бы полный браузерный рендер на каждый запрос все 24 часа
       // TTL, хотя и дешёвый HTTP-путь всё равно закончился бы тем же blocked.
-      deps.hints.markNeedsBrowser(targetHost);
+      if (!context.skipHintUpdate) {
+        deps.hints.markNeedsBrowser(targetHost);
+      }
       return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser', extracted: probe };
     });
   }
