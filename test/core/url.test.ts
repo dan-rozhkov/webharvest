@@ -46,6 +46,9 @@ describe('assertAllowedUrl', () => {
     'http://192.168.1.1/',
     'http://172.16.0.1/',
     'http://router.local/',
+    'http://[::ffff:127.0.0.1]/',
+    'http://[::ffff:169.254.169.254]/',
+    'http://localhost./',
   ]) {
     it(`отклоняет ${bad}`, () => {
       expect(() => assertAllowedUrl(bad)).toThrow(HarvestError);
@@ -68,5 +71,18 @@ describe('isPrivateAddress', () => {
     for (const ip of ['::1', 'fc00::1', 'fe80::1', '::ffff:127.0.0.1'])
       expect(isPrivateAddress(ip)).toBe(true);
     expect(isPrivateAddress('2606:4700:4700::1111')).toBe(false);
+  });
+
+  it('распознаёт IPv4-mapped адреса в канонической hex-форме', () => {
+    // new URL('http://[::ffff:127.0.0.1]/').hostname сериализуется как '::ffff:7f00:1'
+    for (const ip of ['::ffff:7f00:1', '::ffff:a9fe:a9fe'])
+      expect(isPrivateAddress(ip)).toBe(true);
+    expect(isPrivateAddress('::ffff:5db8:d834')).toBe(false); // 93.184.216.52, публичный
+  });
+
+  it('распознаёт весь блок link-local fe80::/10, а не только буквальный префикс fe80::', () => {
+    for (const ip of ['fe80::1', 'fe95::1', 'febf::1'])
+      expect(isPrivateAddress(ip)).toBe(true);
+    expect(isPrivateAddress('fec0::1')).toBe(false); // вне fe80::/10
   });
 });
