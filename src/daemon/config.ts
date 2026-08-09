@@ -39,6 +39,28 @@ const FILE_IGNORED_KEYS = new Set<keyof Config>(['allowPrivate', 'host']);
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
+// Fail loudly rather than fall back silently: Number("8787x") is NaN, and a
+// NaN port reaches app.listen({port: NaN}), which throws ERR_SOCKET_BAD_PORT
+// deep inside Fastify/Node with a message that never mentions
+// WEBHARVEST_PORT or the value that caused it - the daemon just exits 1
+// reporting a listen URL like "http://127.0.0.1:NaN", and the CLI then goes
+// on to probe that nonsense URL. A typo in a plist or shell profile deserves
+// a message that names the actual cause, not a downstream crash three
+// layers removed from it. Falling back to the default 8787 was considered
+// and rejected: it would silently ignore an operator's explicit intent to
+// run on a different port (e.g. to avoid a conflict with another instance),
+// which is exactly the kind of silent degradation this project's spec rules
+// out.
+function parsePort(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(
+      `WEBHARVEST_PORT должен быть целым числом от 1 до 65535, получено: "${raw}"`,
+    );
+  }
+  return n;
+}
+
 function loadFromFile(): Partial<Config> {
   const path = join(homedir(), '.webharvest', 'config.json');
   try {
@@ -56,7 +78,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
 
   const fromEnv: Partial<Config> = {};
   if (process.env.BRAVE_API_KEY) fromEnv.braveApiKey = process.env.BRAVE_API_KEY;
-  if (process.env.WEBHARVEST_PORT) fromEnv.port = Number(process.env.WEBHARVEST_PORT);
+  if (process.env.WEBHARVEST_PORT) fromEnv.port = parsePort(process.env.WEBHARVEST_PORT);
   if (process.env.WEBHARVEST_SEARXNG_URL) fromEnv.searxngUrl = process.env.WEBHARVEST_SEARXNG_URL;
 
   const merged = { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
