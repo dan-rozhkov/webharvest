@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const daemonPath = resolve(here, '../daemon/index.js');
 const home = join(homedir(), '.webharvest');
 const logPath = join(home, 'daemon.log');
+const pidFile = join(home, 'daemon.pid');
 const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const baseUrl = `http://${config.host}:${config.port}`;
 
@@ -45,12 +46,30 @@ async function waitUp(attempts = 20): Promise<boolean> {
 const commands: Record<string, () => Promise<void>> = {
   async start() {
     if (await isUp()) return console.log('Демон уже работает.');
+
+    // If plist is installed, delegate to launchd
+    if (existsSync(plistPath)) {
+      try {
+        execFileSync('launchctl', ['start', LABEL]);
+        console.log(await waitUp() ? `Демон запущен через launchd: ${baseUrl}` : `Демон не поднялся, смотри ${logPath}`);
+      } catch (err) {
+        console.error(`Ошибка при запуске через launchd: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
+      return;
+    }
+
+    // Otherwise, start daemon as unsupervised background process
     mkdirSync(home, { recursive: true });
     const child = spawn(process.execPath, [daemonPath], {
       detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
       env: process.env,
     });
+    // Record the PID so stop can kill it precisely
+    if (child.pid) {
+      writeFileSync(pidFile, String(child.pid), 'utf8');
+    }
     child.unref();
     console.log(await waitUp() ? `Демон поднят: ${baseUrl}` : `Демон не поднялся, смотри ${logPath}`);
   },
@@ -75,11 +94,20 @@ const commands: Record<string, () => Promise<void>> = {
       }
     }
 
-    // Finally, for daemons started manually (not via install), kill any remaining process.
-    try {
-      execFileSync('pkill', ['-f', daemonPath], { stdio: 'ignore' });
-    } catch {
-      // No process found or already dead.
+    // For daemons started manually (not via install), use the recorded PID if available.
+    if (existsSync(pidFile)) {
+      try {
+        const pid = readFileSync(pidFile, 'utf8').trim();
+        execFileSync('kill', [pid]);
+        rmSync(pidFile);
+      } catch {
+        // PID may be stale. Try pkill as last resort.
+        try {
+          execFileSync('pkill', ['-f', daemonPath], { stdio: 'ignore' });
+        } catch {
+          // No process found or already dead.
+        }
+      }
     }
 
     console.log('Демон остановлен.');
@@ -114,13 +142,15 @@ const commands: Record<string, () => Promise<void>> = {
         port: config.port,
       }),
     );
+    // First unload to clear any existing Disabled override
     try {
       execFileSync('launchctl', ['unload', '-w', plistPath], { stdio: 'ignore' });
     } catch {
       // Not loaded yet, that's fine.
     }
+    // Load with -w to clear the Disabled override and enable at boot
     try {
-      execFileSync('launchctl', ['load', plistPath]);
+      execFileSync('launchctl', ['load', '-w', plistPath]);
     } catch (err) {
       console.error(`Ошибка при загрузке в launchd: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);

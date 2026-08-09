@@ -76,4 +76,19 @@ describe('plistContents', () => {
     });
     expect(plist).toContain('a &lt; b &amp; c &gt; d');
   });
+
+  it('не экранирует кавычки в текстовом контенте (они не опасны в XML text content)', () => {
+    // Quotes only need escaping in XML attributes, not in text content.
+    // ProgramArguments values are XML text elements (<string>), not attributes.
+    // So quotes like "path/with \"quotes\"/node" are safe as-is.
+    const plist = plistContents({
+      nodePath: '/path/with "quotes"/node',
+      daemonPath: '/x',
+      logPath: '/y',
+      port: 1,
+    });
+    // Should preserve the quotes unchanged (no &quot;)
+    expect(plist).toContain('with "quotes"');
+    expect(plist).not.toContain('&quot;');
+  });
 });

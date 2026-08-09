@@ -43,6 +43,13 @@ export function createHttpServer(service: Service): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.get('/health', async () => ({
+    // ok: true always at this point because the HTTP server is responding.
+    // If daemon shutdown is implemented in the future (e.g., graceful SIGTERM handling),
+    // set ok: false during shutdown so clients can distinguish "daemon down" from
+    // "daemon up but degraded". For now, the three-state CLI status logic still works:
+    // - Connection fails → "not running"
+    // - Response is 200 with ok=true → "running"
+    // - (ok=false case is unreachable now but reserved for future use)
     ok: true,
     browser: safeBrowserRunning(service),
     version: '0.1.0',
