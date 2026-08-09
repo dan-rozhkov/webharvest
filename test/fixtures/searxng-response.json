@@ -1,0 +1,8 @@
+{
+  "query": "playwright docs",
+  "results": [
+    { "url": "https://playwright.dev/docs/intro", "title": "Installation", "content": "Playwright Test was created…", "engine": "google" },
+    { "url": "https://playwright.dev/docs/intro?utm_source=x", "title": "Installation (dup)", "content": "тот же документ", "engine": "bing" },
+    { "url": "https://github.com/microsoft/playwright", "title": "microsoft/playwright", "content": "Playwright is a framework…", "engine": "duckduckgo" }
+  ]
+}

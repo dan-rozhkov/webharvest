@@ -1,0 +1,8 @@
+{
+  "web": {
+    "results": [
+      { "url": "https://vitest.dev/guide/", "title": "Getting Started | Vitest", "description": "Vitest is a <strong>fast</strong> test runner" },
+      { "url": "https://github.com/vitest-dev/vitest", "title": "vitest-dev/vitest", "description": "Next generation testing framework" }
+    ]
+  }
+}
