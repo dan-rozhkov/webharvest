@@ -34,4 +34,26 @@ describe('createDaemonClient', () => {
     expect(err.code).toBe('daemon_down');
     expect(err.message).toContain('webharvest start');
   });
+
+  it('поиск распаковывает {results} из ответа демона', async () => {
+    const base = await serve(200, { results: [{ url: 'https://a/', title: 'A', snippet: 's', engine: 'brave' }] });
+    const c = createDaemonClient(base);
+    const results = await c.search({ query: 'q' });
+    expect(Array.isArray(results)).toBe(true);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ title: 'A' });
+  });
+
+  it('поиск пробрасывает ошибку демона в HarvestError', async () => {
+    const base = await serve(400, { error: { code: 'invalid_query', message: 'пустой запрос' } });
+    const c = createDaemonClient(base);
+    await expect(c.search({ query: '' })).rejects.toMatchObject({ code: 'invalid_query' });
+  });
+
+  it('поиск вызывает daemon_down, когда демон недоступен', async () => {
+    const c = createDaemonClient('http://127.0.0.1:1');
+    const err = await c.search({ query: 'q' }).catch((e) => e);
+    expect(err.code).toBe('daemon_down');
+    expect(err.message).toContain('webharvest start');
+  });
 });

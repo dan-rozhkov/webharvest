@@ -1,10 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { TOOL_DEFINITIONS, handleScrape, handleSearch } from '../../src/mcp/tools.js';
 import { HarvestError } from '../../src/core/errors.js';
 
+interface CallRecord {
+  scrapeArgs?: Record<string, unknown>;
+  searchArgs?: Record<string, unknown>;
+}
+
+let calls: CallRecord = {};
+beforeEach(() => { calls = {}; });
+
 const client = {
-  scrape: async () => ({ url: 'https://a/', title: 'Заголовок', markdown: 'a'.repeat(1000), via: 'http' as const, cached: false }),
-  search: async () => [{ url: 'https://a/', title: 'A', snippet: 's', engine: 'brave' }],
+  scrape: async (args: unknown) => {
+    calls.scrapeArgs = args as Record<string, unknown>;
+    return { url: 'https://a/', title: 'Заголовок', markdown: 'a'.repeat(1000), via: 'http' as const, cached: false };
+  },
+  search: async (args: unknown) => {
+    calls.searchArgs = args as Record<string, unknown>;
+    return [{ url: 'https://a/', title: 'A', snippet: 's', engine: 'brave' }];
+  },
 };
 
 describe('TOOL_DEFINITIONS', () => {
@@ -38,6 +52,16 @@ describe('handleScrape', () => {
     expect(out).toContain('cloudflare');
     expect(out).not.toContain('at Object.');
   });
+
+  it('передаёт дефолтные значения: refresh=false, includeLinks=false', async () => {
+    await handleScrape(client as never, { url: 'https://a/' });
+    expect(calls.scrapeArgs).toEqual({ url: 'https://a/', refresh: false, includeLinks: false });
+  });
+
+  it('переопределяет дефолты явными значениями', async () => {
+    await handleScrape(client as never, { url: 'https://b/', refresh: true, includeLinks: true });
+    expect(calls.scrapeArgs).toEqual({ url: 'https://b/', refresh: true, includeLinks: true });
+  });
 });
 
 describe('handleSearch', () => {
@@ -45,5 +69,15 @@ describe('handleSearch', () => {
     const out = await handleSearch(client as never, { query: 'q' });
     expect(out).toContain('1.');
     expect(out).toContain('A');
+  });
+
+  it('передаёт дефолтные значения: limit=5, fetchContent=false', async () => {
+    await handleSearch(client as never, { query: 'test' });
+    expect(calls.searchArgs).toEqual({ query: 'test', limit: 5, fetchContent: false });
+  });
+
+  it('переопределяет дефолты явными значениями', async () => {
+    await handleSearch(client as never, { query: 'test', limit: 10, fetchContent: true });
+    expect(calls.searchArgs).toEqual({ query: 'test', limit: 10, fetchContent: true });
   });
 });

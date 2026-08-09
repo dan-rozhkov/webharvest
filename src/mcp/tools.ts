@@ -40,10 +40,10 @@ function explain(e: unknown): string {
   if (HarvestError.is(e)) {
     const hint =
       e.code === 'blocked' ? ' Попробуй другой источник — эту страницу закрывает антибот.'
-      : e.code === 'daemon_down' ? ''
       : e.code === 'timeout' ? ' Можно повторить попытку.'
       : '';
-    return `Не удалось: ${e.message}.${hint}`;
+    const msg = e.message.endsWith('.') ? e.message : `${e.message}.`;
+    return `Не удалось: ${msg}${hint}`;
   }
   return `Не удалось: ${e instanceof Error ? e.message : String(e)}`;
 }

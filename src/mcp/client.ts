@@ -16,10 +16,17 @@ export function createDaemonClient(baseUrl: string) {
         headersTimeout: 120_000,
         bodyTimeout: 120_000,
       });
-    } catch {
+    } catch (err) {
+      const isTimeout =
+        (err instanceof Error && (err as any).code === 'UND_ERR_HEADERS_TIMEOUT') ||
+        (err instanceof Error && (err as any).code === 'UND_ERR_BODY_TIMEOUT') ||
+        (err instanceof Error && err.message.includes('timeout'));
+      if (isTimeout) {
+        throw new HarvestError('timeout', 'Демон медленнее обычного или завис. Повтори попытку позже.');
+      }
       throw new HarvestError(
         'daemon_down',
-        'Демон webharvest не отвечает. Запусти его командой `webharvest start` и повтори.',
+        'Демон webharvest не отвечает. Запусти его командой `webharvest start` и повтори',
       );
     }
 
