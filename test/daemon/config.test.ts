@@ -43,4 +43,25 @@ describe('loadConfig', () => {
     const { loadConfig } = await import('../../src/daemon/config.js');
     expect(loadConfig({ allowPrivate: true }).allowPrivate).toBe(true);
   });
+
+  it('host по умолчанию 127.0.0.1', async () => {
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig().host).toBe('127.0.0.1');
+  });
+
+  it('config.json не может перевести демон на 0.0.0.0', async () => {
+    mkdirSync(join(fakeHome, '.webharvest'), { recursive: true });
+    writeFileSync(
+      join(fakeHome, '.webharvest', 'config.json'),
+      JSON.stringify({ host: '0.0.0.0' }),
+    );
+
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig().host).toBe('127.0.0.1');
+  });
+
+  it('даже explicit override не может увести host с loopback', async () => {
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig({ host: '0.0.0.0' }).host).toBe('127.0.0.1');
+  });
 });

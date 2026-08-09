@@ -29,12 +29,17 @@ const DEFAULTS: Config = {
   allowPrivate: false,
 };
 
-// Поля, которые config.json на диске не может задать. allowPrivate отключает
-// SSRF-защиту — если бы файл конфигурации мог включить это одним нечаянным
-// "true", демон стал бы прокси на приватную сеть без единого явного решения
-// вызывающего кода. Единственный легитимный путь — overrides, переданные
+// Поля, которые config.json на диске не может задать.
+//  - allowPrivate отключает SSRF-защиту — файл на диске не должен мочь
+//    включить это одним нечаянным "true".
+//  - host решает, на каком интерфейсе слушает демон. Глобальное требование
+//    проекта — "демон биндится только на 127.0.0.1" — не должно зависеть от
+//    того, что кто-то однажды допишет "0.0.0.0" в config.json.
+// Единственный легитимный путь изменить эти поля — overrides, переданные
 // программно (например, тестами).
-const FILE_IGNORED_KEYS = new Set<keyof Config>(['allowPrivate']);
+const FILE_IGNORED_KEYS = new Set<keyof Config>(['allowPrivate', 'host']);
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function loadFromFile(): Partial<Config> {
   const path = join(homedir(), '.webharvest', 'config.json');
@@ -56,5 +61,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (process.env.WEBHARVEST_PORT) fromEnv.port = Number(process.env.WEBHARVEST_PORT);
   if (process.env.WEBHARVEST_SEARXNG_URL) fromEnv.searxngUrl = process.env.WEBHARVEST_SEARXNG_URL;
 
-  return { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
+  const merged = { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
+
+  // Defense in depth: even an explicit override cannot make the daemon bind
+  // to a non-loopback interface. This is the one config invariant we never
+  // relax, unlike allowPrivate which tests legitimately need to flip.
+  if (!LOOPBACK_HOSTS.has(merged.host)) {
+    merged.host = DEFAULTS.host;
+  }
+
+  return merged;
 }
