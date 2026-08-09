@@ -1,10 +1,20 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { createService } from '../../src/daemon/service.js';
 import { loadConfig } from '../../src/daemon/config.js';
 
-const service = createService(loadConfig({ cachePath: ':memory:' }));
+const LIVE = process.env.WEBHARVEST_LIVE === '1';
+// vitest 2.1's TaskContext#skip() takes no reason argument, so the "how to
+// run this" hint is baked into the test title instead — it shows up next to
+// every skipped test in the reporter output.
+const titled = (name: string): string =>
+  LIVE ? name : `${name} (skipped — run \`npm run test:live\` to execute)`;
+
+let service: ReturnType<typeof createService>;
+beforeAll(() => {
+  if (LIVE) service = createService(loadConfig({ cachePath: ':memory:' }));
+});
 afterAll(async () => {
-  await service.shutdown();
+  await service?.shutdown();
 });
 
 // Detect if search is available
@@ -36,7 +46,11 @@ async function checkSearchAvailable(): Promise<boolean> {
 }
 
 describe('live search', () => {
-  it('находит официальный сайт по названию инструмента', async (ctx) => {
+  it(titled('находит официальный сайт по названию инструмента'), async (ctx) => {
+    if (!LIVE) {
+      ctx.skip();
+      return;
+    }
     if (!(await checkSearchAvailable())) {
       ctx.skip();
     }
@@ -45,7 +59,11 @@ describe('live search', () => {
     expect(results.some((r) => r.url.includes('playwright.dev'))).toBe(true);
   }, 30_000);
 
-  it('не возвращает дублей по нормализованному URL', async (ctx) => {
+  it(titled('не возвращает дублей по нормализованному URL'), async (ctx) => {
+    if (!LIVE) {
+      ctx.skip();
+      return;
+    }
     if (!(await checkSearchAvailable())) {
       ctx.skip();
     }
@@ -54,7 +72,11 @@ describe('live search', () => {
     expect(new Set(hosts).size).toBe(hosts.length);
   }, 30_000);
 
-  it('догружает содержимое и переживает падение отдельного результата', async (ctx) => {
+  it(titled('догружает содержимое и переживает падение отдельного результата'), async (ctx) => {
+    if (!LIVE) {
+      ctx.skip();
+      return;
+    }
     if (!(await checkSearchAvailable())) {
       ctx.skip();
     }
