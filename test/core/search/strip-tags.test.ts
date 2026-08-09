@@ -18,12 +18,28 @@ describe('stripTags', () => {
     expect(stripTags('run: cmd < input.txt > output.txt')).toBe('run: cmd < input.txt > output.txt');
   });
 
+  it('не трогает shell cat с ">"', () => {
+    expect(stripTags('cat a > b')).toBe('cat a > b');
+  });
+
+  it('не трогает "<3" в прозе', () => {
+    expect(stripTags('a <3 heart')).toBe('a <3 heart');
+  });
+
   it('вырезает настоящий тег без атрибутов', () => {
     expect(stripTags('<b>жирный</b> текст')).toBe('жирный текст');
   });
 
   it('вырезает настоящий тег с атрибутами', () => {
     expect(stripTags('<span class="highlight">совпадение</span>')).toBe('совпадение');
+  });
+
+  it('вырезает тег в верхнем регистре', () => {
+    expect(stripTags('<SPAN class="hl">upper</SPAN>')).toBe('upper');
+  });
+
+  it('вырезает тег в смешанном регистре', () => {
+    expect(stripTags('<Mark>mixed</Mark> case')).toBe('mixed case');
   });
 
   it('вырезает тег с котированным атрибутом, содержащим ">"', () => {

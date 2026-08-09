@@ -10,7 +10,19 @@ import { plistContents, LABEL } from './launchd.js';
 import { reconcileBeforeInstall, stopManualDaemon } from './daemon-process.js';
 import { openLogSink, describeLogsAvailability } from './log-file.js';
 
-const config = loadConfig();
+// loadConfig() fails loudly on an invalid config (e.g. a malformed
+// WEBHARVEST_PORT) — that's the right call for the daemon, which should
+// never silently fall back to a wrong port. But the CLI is also how an
+// operator recovers from exactly that kind of typo (e.g. `webharvest stop`),
+// so it must not die with a raw Node stack trace: print the message through
+// the CLI's own formatting and exit 1 instead.
+let config;
+try {
+  config = loadConfig();
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 const here = dirname(fileURLToPath(import.meta.url));
 const daemonPath = resolve(here, '../daemon/index.js');
 const home = join(homedir(), '.webharvest');
