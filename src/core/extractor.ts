@@ -118,6 +118,23 @@ function absolutize(doc: Document, baseUrl: string): void {
   }
 }
 
+/**
+ * `<base href>` overrides the document's own URL as the base for every
+ * relative link/src on the page — common on docs generators and GitHub
+ * Pages. Ignoring it (resolving against the fetched `url` instead) silently
+ * produces wrong absolute URLs that look plausible, and the agent then goes
+ * on to scrape the wrong pages.
+ */
+function resolveBase(doc: Document, url: string): string {
+  const raw = doc.querySelector('base[href]')?.getAttribute('href');
+  if (!raw) return url;
+  try {
+    return new URL(raw, url).toString();
+  } catch {
+    return url;
+  }
+}
+
 function metaContent(doc: Document, names: string[]): string | undefined {
   for (const n of names) {
     const el = doc.querySelector(`meta[property="${n}"], meta[name="${n}"]`);
@@ -356,8 +373,9 @@ export function extract(html: string, url: string): Extracted {
     lang: doc.documentElement.getAttribute('lang') ?? undefined,
   };
 
-  absolutize(doc, url);
-  const links = collectLinks(doc, url);
+  const effectiveBase = resolveBase(doc, url);
+  absolutize(doc, effectiveBase);
+  const links = collectLinks(doc, effectiveBase);
   for (const sel of CODE_CHROME_SELECTORS) {
     for (const dead of Array.from(doc.querySelectorAll(sel))) dead.remove();
   }

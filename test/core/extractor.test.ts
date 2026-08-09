@@ -104,6 +104,22 @@ describe('extract: свойства', () => {
     expect(links).toContainEqual({ href: 'https://example.com/up', text: 'вверх' });
   });
 
+  it('использует <base href>, а не URL страницы, для относительных ссылок', () => {
+    const html =
+      '<html><head><base href="https://cdn.example.com/assets/"></head>' +
+      '<body><article><p>текст</p><a href="page">rel</a><img src="pic.png"></article></body></html>';
+    const { markdown, links } = extract(html, 'https://example.com/dir/other');
+    const haystack = markdown + JSON.stringify(links);
+    expect(haystack).toContain('https://cdn.example.com/assets/page');
+    expect(haystack).not.toContain('https://example.com/dir/page');
+  });
+
+  it('без <base> резолвит относительно URL страницы, как раньше', () => {
+    const html = '<html><body><article><p>текст</p><a href="page">rel</a></article></body></html>';
+    const { links } = extract(html, 'https://example.com/dir/other');
+    expect(links).toContainEqual({ href: 'https://example.com/dir/page', text: 'rel' });
+  });
+
   it('не падает на пустом и на битом HTML', () => {
     expect(() => extract('', 'https://example.com/')).not.toThrow();
     expect(() => extract('<html><body><div><p>x', 'https://example.com/')).not.toThrow();

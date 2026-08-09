@@ -285,6 +285,18 @@ describe('detectChallenge', () => {
     expect(detectChallenge(interstitial)).toBe('cloudflare');
   });
 
+  it('узнаёт Cloudflare Turnstile по скрипту виджета', () => {
+    const turnstile = html(
+      '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',
+    );
+    expect(detectChallenge(turnstile)).toBe('cloudflare');
+  });
+
+  it('узнаёт Cloudflare Turnstile по одному лишь классу cf-turnstile', () => {
+    expect(detectChallenge(html('<div class="cf-turnstile" data-sitekey="x"></div>'))).toBe('cloudflare');
+  });
+
   it('узнаёт DataDome', () => {
     expect(detectChallenge(html('<script src="https://js.datadome.co/tags.js"></script>'))).toBe(
       'datadome',

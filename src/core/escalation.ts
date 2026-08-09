@@ -56,6 +56,13 @@ const CHALLENGE_SIGNATURES: { name: Challenge; patterns: RegExp[] }[] = [
       // ответы 200, и по нему любая нормальная страница CF-сайта считалась бы
       // заблокированной — агент получил бы blocked на успешно скачанной статье.
       /\/cdn-cgi\/challenge-platform\/[^"'\s]*\/(?:orchestrate|chl_page|invisible|managed)\b/i,
+      // Turnstile: Cloudflare's newer, widget-based challenge (replacing the
+      // classic "Just a moment..." interstitial on many sites). Without this,
+      // a Turnstile-gated page has no cf-browser-verification / chl_opt
+      // markers to match and surfaces as a generic "no readable text" —
+      // technically true but hides that it's specifically an anti-bot wall.
+      /challenges\.cloudflare\.com\/turnstile/i,
+      /cf-turnstile/i,
     ],
   },
   {
