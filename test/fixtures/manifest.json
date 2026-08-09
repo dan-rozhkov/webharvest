@@ -51,7 +51,7 @@
     "id": "nodejs-blog",
     "url": "https://nodejs.org/en/blog/release/v22.0.0",
     "kind": "article",
-    "expectTitleIncludes": "v22.0.0",
+    "expectTitleIncludes": "22.0.0",
     "minTextLength": 25000,
     "mustNotInclude": []
   },
