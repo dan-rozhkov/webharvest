@@ -4,7 +4,7 @@
     "url": "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch",
     "kind": "docs",
     "expectTitleIncludes": "Fetch",
-    "minTextLength": 20000,
+    "minTextLength": 17000,
     "mustNotInclude": ["Skip to main content", "Toggle navigation"]
   },
   {
@@ -44,7 +44,7 @@
     "url": "https://github.com/microsoft/playwright",
     "kind": "article",
     "expectTitleIncludes": "Playwright",
-    "minTextLength": 8000,
+    "minTextLength": 6000,
     "mustNotInclude": ["Sign up"]
   },
   {

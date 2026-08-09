@@ -67,6 +67,43 @@ describe('extract: свойства', () => {
     expect(extract(html, 'https://example.com/').markdown).toContain('| a |');
   });
 
+  it('разворачивает layout-таблицу, даже если внутри есть таблица с данными', () => {
+    const html = `<html><body><table><tr><td><b>menu</b></td><td><table><tr><th>col</th></tr><tr><td>1</td></tr></table></td></tr></table></body></html>`;
+    const md = extract(html, 'https://example.com/').markdown;
+    expect(md).not.toContain('<table');
+    expect(md).toContain('| col |');
+  });
+
+  it('не теряет второй <code> внутри <pre>', () => {
+    const html = '<html><body><article><pre><code>AAA</code><code>BBB</code></pre></article></body></html>';
+    expect(extract(html, 'https://example.com/').markdown).toContain('BBB');
+  });
+
+  it('удлиняет ограждение, если в коде есть тройная кавычка', () => {
+    const html =
+      '<html><body><article><pre><code>```\nне ограждение\n```</code></pre></article></body></html>';
+    const md = extract(html, 'https://example.com/').markdown;
+    expect(md).toContain('````');
+    expect(md).toContain('не ограждение');
+  });
+
+  it('textLength не растёт от длинных адресов ссылок', () => {
+    const href = 'https://example.com/' + 'x'.repeat(2000);
+    const html = `<html><body><div id="app"><a href="${href}">ссылка</a></div></body></html>`;
+    const { textLength, markdown } = extract(html, 'https://example.com/');
+    expect(markdown).toContain(href);
+    expect(textLength).toBeLessThan(100);
+  });
+
+  it('читает описание и отдаёт абсолютные адреса в links', () => {
+    const html =
+      '<html><head><meta name="description" content="Про страницу"></head>' +
+      '<body><article><p>текст</p><a href="../up">вверх</a></article></body></html>';
+    const { description, links } = extract(html, 'https://example.com/dir/page');
+    expect(description).toBe('Про страницу');
+    expect(links).toContainEqual({ href: 'https://example.com/up', text: 'вверх' });
+  });
+
   it('не падает на пустом и на битом HTML', () => {
     expect(() => extract('', 'https://example.com/')).not.toThrow();
     expect(() => extract('<html><body><div><p>x', 'https://example.com/')).not.toThrow();

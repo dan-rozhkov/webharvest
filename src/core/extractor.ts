@@ -83,10 +83,15 @@ function makeTurndown(): TurndownService {
     filter: (node) => node.nodeName === 'PRE',
     replacement: (_content, node) => {
       const el = node as unknown as Element;
-      const code = el.querySelector('code');
-      const lang = languageOf(code) || languageOf(el);
-      const text = (code ?? el).textContent ?? '';
-      return `\n\n\`\`\`${lang}\n${text.replace(/\n+$/, '')}\n\`\`\`\n\n`;
+      const codes = Array.from(el.querySelectorAll('code'));
+      // Несколько <code> в одном <pre> — это части одного листинга: берём весь <pre>.
+      const source = codes.length === 1 ? codes[0]! : el;
+      const lang = languageOf(codes[0] ?? null) || languageOf(el);
+      const text = (source.textContent ?? '').replace(/\n+$/, '');
+      // Ограждение должно быть длиннее самой длинной цепочки кавычек внутри кода.
+      const longest = Math.max(0, ...Array.from(text.matchAll(/`+/g), (m) => m[0].length));
+      const fence = '`'.repeat(Math.max(3, longest + 1));
+      return `\n\n${fence}${lang}\n${text}\n${fence}\n\n`;
     },
   });
   return td;
@@ -166,9 +171,15 @@ function cleanupMarkdown(md: string): string {
     .trim();
 }
 
-/** Таблица с данными (есть шапка) конвертируется в GFM; всё прочее — вёрстка. */
+/**
+ * Таблица с данными (есть собственная шапка) конвертируется в GFM; всё прочее — вёрстка.
+ * Шапка вложенной таблицы не считается: иначе layout-таблица, обёрнутая вокруг таблицы
+ * с данными, никогда не развернётся и уедет в markdown сырым HTML.
+ */
 function isDataTable(table: Element): boolean {
-  return table.querySelector('th, thead') !== null;
+  return Array.from(table.querySelectorAll('th, thead')).some(
+    (head) => head.closest('table') === table,
+  );
 }
 
 /**
@@ -239,11 +250,26 @@ const DefuddleClass = DefuddleExport as unknown as new (
   options?: { url?: string },
 ) => { parse(): { content?: string; title?: string } | null };
 
+/**
+ * Defuddle безусловно пишет в stdout «Initial parse returned very little content»
+ * на каждой скудной странице. Нам нужен чистый вывод тестов и логов демона,
+ * а вызов синхронный — подменить console.log на время разбора безопасно.
+ */
+function withoutConsoleLog<T>(fn: () => T): T {
+  const original = console.log;
+  console.log = () => {};
+  try {
+    return fn();
+  } finally {
+    console.log = original;
+  }
+}
+
 /** Основной извлекатель. Класс синхронный — extract обязан быть чистой функцией без I/O. */
 function runDefuddle(html: string, url: string): Picked | null {
   try {
     const dom = new JSDOM(html, { url });
-    const result = new DefuddleClass(dom.window.document, { url }).parse();
+    const result = withoutConsoleLog(() => new DefuddleClass(dom.window.document, { url }).parse());
     const text = result?.content ? plainTextLength(result.content) : 0;
     if (result?.content && text > MIN_USEFUL_TEXT) {
       return { content: result.content, title: result.title, text };
