@@ -114,6 +114,20 @@ export function assertAllowedUrl(input: string): URL {
   return u;
 }
 
+// NOTE (honest limitation, not fixed here): this is check-then-use, not a
+// closed gate. It resolves `hostname` and validates the addresses it gets
+// back right now, but the actual request happens later and resolves again,
+// independently, inside undici and inside Playwright's own network stack -
+// neither of which is told to reuse this lookup or pin to these addresses.
+// A short-TTL DNS record that answers with a public address here and a
+// private one by the time undici/Playwright resolve it (classic DNS
+// rebinding) walks straight past this guard. Properly closing that gap
+// needs pinned-IP dispatch (resolve once, force undici's and Playwright's
+// connections onto that exact address, and validate the connecting socket's
+// remote address before any bytes are read) - real engineering, out of
+// scope for a personal tool. Do not read the code below as if it closes
+// this gap; it only shrinks the window and raises the bar from "always
+// works" to "wins a very fast DNS race".
 export async function assertPublicHost(hostname: string): Promise<void> {
   const host = stripTrailingDot(hostname.toLowerCase().replace(/^\[|\]$/g, ''));
   if (isIP(host)) {

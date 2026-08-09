@@ -96,6 +96,10 @@ The brief specifies why `robots.txt` as a prohibition was deliberately omitted: 
 
 A `respectRobots` config flag was considered and removed. It is not coming back. Rate limiting is the mechanism.
 
+### ❌ SSRF Protection Doesn't Close DNS Rebinding
+
+The private-address check (`assertPublicHost`) resolves the hostname and validates the addresses it gets, but that's a check-then-use, not a closed gate: undici and Playwright each resolve the hostname again, independently, when they actually connect. A host with a short DNS TTL that answers with a public address during the check and a private one moments later (classic DNS rebinding) can walk past the guard. Properly closing this needs pinned-IP dispatch — resolve once, force every subsequent connection onto that exact address, and validate the connecting socket's remote address before reading any bytes — which is real engineering, not a quick patch, and is out of scope for a personal tool. Known and accepted, not silently assumed away.
+
 ## Configuration
 
 Settings live in `~/.webharvest/config.json`. The daemon only ever reads this
