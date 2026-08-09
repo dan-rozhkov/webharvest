@@ -76,7 +76,7 @@ You control the browser automation — no opaque API calls, no subscription, all
 
 ### ❌ No PDF Support
 
-PDFs are fetched but not parsed. The scraper returns raw binary data and exits. Use a dedicated PDF parser if you need full-text extraction from PDFs.
+PDFs are not parsed. The scraper detects the non-HTML content type and returns a clean `not_html` error — it never hands you raw binary data. Use a dedicated PDF parser if you need full-text extraction from PDFs.
 
 ### ❌ No Authentication
 
@@ -98,18 +98,24 @@ A `respectRobots` config flag was considered and removed. It is not coming back.
 
 ## Configuration
 
-Settings live in `~/.webharvest/config.json` (created on first run):
+Settings live in `~/.webharvest/config.json`. The daemon only ever reads this
+file — it is never created for you, so if you want to override defaults,
+create it yourself:
 
 ```json
 {
   "port": 8787,
-  "cachePath": "~/.webharvest/cache.db",
+  "cachePath": "/Users/you/.webharvest/cache.db",
   "cacheTtlMs": 86400000,
   "searxngUrl": "http://127.0.0.1:8080",
   "braveApiKey": null,
   "idleTimeoutMs": 300000
 }
 ```
+
+Note: `cachePath` is used as-is, with no `~` expansion — write an absolute
+path (as above), not `~/.webharvest/cache.db`, or you'll get a literal `./~`
+directory relative to wherever the daemon happens to be started from.
 
 Environment variables override config file settings:
 - `WEBHARVEST_PORT` — daemon listening port
