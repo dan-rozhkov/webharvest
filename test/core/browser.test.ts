@@ -15,12 +15,26 @@ afterEach(async () => {
 async function serve(handler: (url: string) => { status?: number; body: string }): Promise<string> {
   server = createServer((req, res) => {
     const { status = 200, body } = handler(req.url ?? '/');
-    res.writeHead(status, { 'content-type': 'text/html' });
+    res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
     res.end(body);
   });
   await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
   const { port } = server!.address() as { port: number };
   return `http://127.0.0.1:${port}`;
+}
+
+/** Encodes ASCII + Cyrillic (А-Я, а-я, Ё, ё) text as raw windows-1251 bytes. */
+function encodeWindows1251(text: string): Buffer {
+  const bytes = Array.from(text).map((ch) => {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x80) return cp;
+    if (cp >= 0x0410 && cp <= 0x042f) return 0xc0 + (cp - 0x0410); // А-Я
+    if (cp >= 0x0430 && cp <= 0x044f) return 0xe0 + (cp - 0x0430); // а-я
+    if (cp === 0x0401) return 0xa8; // Ё
+    if (cp === 0x0451) return 0xb8; // ё
+    throw new Error(`no windows-1251 mapping for ${ch}`);
+  });
+  return Buffer.from(bytes);
 }
 
 describe('BrowserPool', () => {
@@ -39,7 +53,7 @@ describe('BrowserPool', () => {
     expect(pool.isRunning()).toBe(false);
   });
 
-  it('сообщает финальный URL после редиректа', async () => {
+  it('сообщает финальный URL после client-side редиректа', async () => {
     const base = await serve((url) =>
       url === '/from'
         ? { body: '<html><head><meta http-equiv="refresh" content="0;url=/to"></head><body>x</body></html>' }
@@ -48,6 +62,43 @@ describe('BrowserPool', () => {
     pool = createBrowserPool({ idleTimeoutMs: 60_000 });
     const r = await pool.render(base + '/from');
     expect(r.finalUrl).toContain('/to');
+  });
+
+  it('сообщает финальный URL после настоящего HTTP 302', async () => {
+    server = createServer((req, res) => {
+      if (req.url === '/from') {
+        res.writeHead(302, { location: '/to' });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end('<html><body><p>цель</p></body></html>');
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    const r = await pool.render(`http://127.0.0.1:${port}/from`);
+    expect(r.finalUrl).toContain('/to');
+  });
+
+  it('уважает кодировку, объявленную через meta charset, а не навязывает UTF-8', async () => {
+    const word = 'Привет';
+    const body = Buffer.concat([
+      Buffer.from('<html><head><meta charset="windows-1251"></head><body><p>', 'latin1'),
+      encodeWindows1251(word),
+      Buffer.from('</p></body></html>', 'latin1'),
+    ]);
+    server = createServer((req, res) => {
+      // Deliberately no charset in the HTTP header - the page must be
+      // decoded per its own <meta charset>, not forced to UTF-8.
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(body);
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    const r = await pool.render(`http://127.0.0.1:${port}/`);
+    expect(r.html).toContain(word);
   });
 
   it('закрывает браузер после простоя', async () => {
@@ -66,6 +117,23 @@ describe('BrowserPool', () => {
     await new Promise((r) => setTimeout(r, 900));
     const r = await pool.render(base + '/');
     expect(r.html).toContain('снова');
+  });
+
+  it('не закрывает браузер по простою, если рендер ещё выполняется', async () => {
+    // A render that's still running when the idle timer would fire must
+    // not have its context torn down out from under it. Uses a server
+    // that responds slower than idleTimeoutMs.
+    server = createServer((req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<html><body><p>долго</p></body></html>');
+      }, 600);
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    pool = createBrowserPool({ idleTimeoutMs: 300 });
+    const r = await pool.render(`http://127.0.0.1:${port}/`, { timeoutMs: 5000 });
+    expect(r.html).toContain('долго');
   });
 
   it('бросает timeout на зависшей странице', async () => {
@@ -98,35 +166,80 @@ describe('BrowserPool', () => {
   });
 
   it('ограничивает число одновременных рендеров maxConcurrent', async () => {
-    let inFlight = 0;
+    let concurrent = 0;
     let maxObserved = 0;
-    const base = await serve(() => {
-      inFlight++;
-      maxObserved = Math.max(maxObserved, inFlight);
-      return { body: '<html><body>x</body></html>' };
+    server = createServer((req, res) => {
+      concurrent++;
+      maxObserved = Math.max(maxObserved, concurrent);
+      setTimeout(() => {
+        concurrent--;
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<html><body>x</body></html>');
+      }, 400);
     });
-    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 1 });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    const base = `http://127.0.0.1:${port}`;
+    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 2 });
     await Promise.all([pool.render(base + '/a'), pool.render(base + '/b'), pool.render(base + '/c')]);
-    // The HTTP handler itself is synchronous, so this doesn't prove
-    // serialization on its own, but the pool must not throw or deadlock
-    // and every request must still complete.
-    expect(maxObserved).toBeGreaterThan(0);
+    expect(maxObserved).toBe(2);
   });
 
-  it('переживает shutdown, вызванный во время рендера', async () => {
+  it('переживает shutdown, вызванный во время рендера, и не работает после остановки', async () => {
     const base = await serve(() => ({ body: '<html><body><p>ok</p></body></html>' }));
     pool = createBrowserPool({ idleTimeoutMs: 60_000 });
     const renderPromise = pool.render(base + '/', { timeoutMs: 5000 });
-    // Race shutdown against the in-flight render. Either the render
-    // finishes first (shutdown then tears down a browser nobody needs
-    // anymore) or shutdown wins and the render either still resolves
-    // (page already navigated) or rejects cleanly - it must never hang
-    // or corrupt pool state.
-    const [renderOutcome] = await Promise.allSettled([renderPromise, pool.shutdown()]);
-    expect(['fulfilled', 'rejected']).toContain(renderOutcome.status);
+    // The exact fate of a render racing shutdown at this granularity
+    // depends on Playwright-internal timing (whether the context closes
+    // before or after the in-flight navigation lands), so we don't pin
+    // that outcome - only that it settles.
+    await Promise.allSettled([renderPromise, pool.shutdown()]);
     expect(pool.isRunning()).toBe(false);
-    // Pool must still be usable afterwards.
-    const r = await pool.render(base + '/');
-    expect(r.html).toContain('ok');
+    // shutdown() is terminal: no auto-relaunch, further renders reject.
+    await expect(pool.render(base + '/')).rejects.toMatchObject({ code: 'network' });
+  });
+
+  it('отклоняет рендер, ожидавший слот в очереди, если shutdown случился раньше', async () => {
+    let releaseFirst: (() => void) | undefined;
+    server = createServer((req, res) => {
+      // Hold the first request open until the test releases it, so the
+      // second render() call is guaranteed to still be queued behind the
+      // maxConcurrent(1) gate - never having touched the browser at all -
+      // when shutdown() runs.
+      releaseFirst = () => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<html><body>x</body></html>');
+      };
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    const base = `http://127.0.0.1:${port}`;
+    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 1 });
+
+    const first = pool.render(base + '/', { timeoutMs: 5000 });
+    const second = pool.render(base + '/', { timeoutMs: 5000 });
+    // Attach handlers immediately: shutdown() below can cause either of
+    // these to settle inside its own await (chained through closing the
+    // context), before the real assertions further down get a chance to
+    // attach - Node would otherwise report a transient unhandled rejection.
+    first.catch(() => {});
+    second.catch(() => {});
+
+    // Wait until the first request actually reaches the server (proving
+    // it holds the only slot), then shut the pool down while `second` is
+    // still parked in the wait queue.
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (releaseFirst) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 10);
+    });
+    await pool.shutdown();
+    await expect(second).rejects.toMatchObject({ code: 'network' });
+
+    releaseFirst?.();
+    await Promise.allSettled([first]);
   });
 });

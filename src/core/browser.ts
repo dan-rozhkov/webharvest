@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { HarvestError } from './errors.js';
 
 export interface RenderResult {
@@ -37,6 +37,8 @@ const STEALTH_INIT = `
       : origQuery(p);
 `;
 
+const CLOSED_MESSAGE = 'Пул браузеров остановлен, рендер отклонён';
+
 export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   const idleTimeoutMs = opts.idleTimeoutMs ?? 5 * 60_000;
   const maxConcurrent = opts.maxConcurrent ?? 3;
@@ -51,6 +53,9 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   // render tear down (or touch the idle timer of) a *newer* instance.
   let generation = 0;
   const waiting: (() => void)[] = [];
+  // Terminal flag set by the public shutdown(). Distinct from the idle
+  // auto-close, which must still allow a later render() to relaunch.
+  let closed = false;
 
   // Serializes concurrent launches so two overlapping renders that both see
   // context === null don't each start their own `chromium.launch()`.
@@ -62,7 +67,7 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     launching = (async () => {
       const b = await chromium.launch({
         headless,
-        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage', '--no-sandbox'],
+        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
       });
       const c = await b.newContext({
         userAgent: UA,
@@ -73,33 +78,6 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
         extraHTTPHeaders: { 'accept-language': 'en-US,en;q=0.9,ru;q=0.8' },
       });
       await c.addInitScript(STEALTH_INIT);
-      // Many real-world (and test) servers serve HTML without a charset in
-      // Content-Type. Browsers then fall back to a legacy locale-dependent
-      // encoding (often Latin-1-ish) and mangle non-ASCII text. Since this
-      // pool is a scraper, not a browser for humans, default such responses
-      // to UTF-8 rather than reproduce that legacy guess.
-      await c.route('**/*', async (route) => {
-        const request = route.request();
-        if (request.resourceType() !== 'document') {
-          await route.continue();
-          return;
-        }
-        let response;
-        try {
-          response = await route.fetch();
-        } catch {
-          await route.abort().catch(() => {});
-          return;
-        }
-        const headers = response.headers();
-        const ct = headers['content-type'];
-        if (ct && /text\/html/i.test(ct) && !/charset=/i.test(ct)) {
-          headers['content-type'] = `${ct}; charset=utf-8`;
-          await route.fulfill({ response, headers });
-        } else {
-          await route.fulfill({ response });
-        }
-      });
       browser = b;
       context = c;
       generation += 1;
@@ -119,22 +97,27 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     if (gen !== generation) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      void shutdown();
+      // A render may have acquired a slot (and cleared this very timer)
+      // in between it being scheduled and firing, if this callback was
+      // already queued on the event loop. Guard against closing a browser
+      // that a render is actively using.
+      if (active > 0) return;
+      void idleClose();
     }, idleTimeoutMs);
     idleTimer.unref?.();
   }
 
-  async function shutdown(): Promise<void> {
+  async function teardown(): Promise<void> {
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
     // If a launch is in progress, wait for it before deciding what to
-    // close. Otherwise a shutdown that races ahead of `ensure()` would
+    // close. Otherwise a teardown that races ahead of `ensure()` would
     // return while context/browser are still null, and the browser that
     // finishes launching a moment later would never get closed - it
     // would just sit there, invisible to isRunning(), leaking the
-    // process shutdown() promised to end.
+    // process this was supposed to end.
     if (launching) {
       await launching.catch(() => {});
     }
@@ -146,20 +129,35 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     await b?.close().catch(() => {});
   }
 
-  async function doRender(url: string, timeout: number): Promise<RenderResult> {
+  /** Idle-triggered close: non-terminal, a later render() may relaunch. */
+  async function idleClose(): Promise<void> {
+    await teardown();
+  }
+
+  /** Public, terminal shutdown: no render() may relaunch after this. */
+  async function shutdown(): Promise<void> {
+    closed = true;
+    await teardown();
+  }
+
+  async function doRender(url: string, timeout: number, onPage: (p: Page) => void): Promise<RenderResult> {
     let gen: number;
-    let page: Awaited<ReturnType<BrowserContext['newPage']>>;
+    let page: Page;
     try {
       const acquired = await ensure();
       gen = acquired.gen;
       page = await acquired.ctx.newPage();
+      onPage(page);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new HarvestError('network', `Не удалось запустить браузер: ${msg}`);
     }
     try {
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-      await page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 8000) }).catch(() => {});
+      // A short best-effort wait for network activity to settle. Capped
+      // well below `timeout` regardless of the caller's budget, so it
+      // can't itself eat into the headroom the outer deadline relies on.
+      await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
       await page.waitForTimeout(300);
       const html = await page.content();
       return { html, finalUrl: page.url(), status: response?.status() ?? 0 };
@@ -178,45 +176,72 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   async function render(url: string, o: { timeoutMs?: number } = {}): Promise<RenderResult> {
     const timeout = o.timeoutMs ?? 30_000;
 
-    while (active >= maxConcurrent) {
+    // Checked at the top of every loop iteration: once before ever
+    // waiting (a render arriving after shutdown must not start), and
+    // again every time a waiter is woken (a render that was queued
+    // behind the maxConcurrent gate when shutdown() landed must not
+    // proceed to ensure() and relaunch a browser the pool is trying to
+    // retire).
+    for (;;) {
+      if (closed) throw new HarvestError('network', CLOSED_MESSAGE);
+      if (active < maxConcurrent) break;
       await new Promise<void>((resolve) => waiting.push(resolve));
     }
     active++;
+    // This render now owns a slot and is about to touch the browser -
+    // cancel any pending idle shutdown so it can't close the browser out
+    // from under this navigation.
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
 
     let released = false;
     const release = (): void => {
       if (released) return;
       released = true;
       active--;
-      // Wake exactly one waiter; it re-checks the cap itself.
+      // Wake exactly one waiter; it re-checks the cap (and `closed`) itself.
       waiting.shift()?.();
     };
 
+    // The concurrency slot is released only when the real work (`workPromise`)
+    // settles, not when the caller's promise settles below. Otherwise a
+    // render that times out via the deadline race would free its slot
+    // immediately while its browser page keeps running in the background,
+    // and maxConcurrent would no longer bound the number of live pages.
+    let capturedPage: Page | null = null;
+    const workPromise = doRender(url, timeout, (p) => {
+      capturedPage = p;
+    });
+    workPromise.then(release, release);
+
+    // page.goto()'s own `timeout` option only bounds navigation. It does
+    // not bound ensure()/newPage(), and it cannot save us if the context
+    // is closed out from under an in-flight operation by a concurrent
+    // shutdown() - Playwright can then leave that operation's promise
+    // permanently unresolved instead of rejecting it. A hard deadline
+    // around the whole pipeline is the only way to guarantee render()
+    // always settles within roughly timeoutMs, whatever the browser does
+    // internally. Some headroom over the inner budget (goto's own timeout,
+    // plus the capped networkidle wait and settle delay) avoids discarding
+    // a page that was about to succeed just inside that inner budget.
+    let deadline: NodeJS.Timeout | undefined;
+    const deadlinePromise = new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => {
+        // Try to force the stuck operation to unwind quickly (and its
+        // page to close) rather than leaving it running unbounded in the
+        // background - this is the case the deadline exists for.
+        void capturedPage?.close().catch(() => {});
+        reject(new HarvestError('timeout', `Браузер не дождался ${url} за ${timeout} мс`));
+      }, timeout + 1500);
+      deadline.unref?.();
+    });
+
     try {
-      // page.goto()'s own `timeout` option only bounds navigation. It does
-      // not bound ensure()/newPage(), and it cannot save us if the context
-      // is closed out from under an in-flight operation by a concurrent
-      // shutdown() - Playwright then leaves that operation's promise
-      // permanently unresolved instead of rejecting it. A hard deadline
-      // around the whole pipeline is the only way to guarantee render()
-      // always settles within timeoutMs, whatever the browser does
-      // internally. The loser keeps running in the background (its own
-      // finally still closes the page and touches the idle timer); we
-      // just stop waiting on it.
-      let deadline: NodeJS.Timeout | undefined;
-      const deadlinePromise = new Promise<never>((_, reject) => {
-        deadline = setTimeout(() => {
-          reject(new HarvestError('timeout', `Браузер не дождался ${url} за ${timeout} мс`));
-        }, timeout);
-        deadline.unref?.();
-      });
-      try {
-        return await Promise.race([doRender(url, timeout), deadlinePromise]);
-      } finally {
-        clearTimeout(deadline);
-      }
+      return await Promise.race([workPromise, deadlinePromise]);
     } finally {
-      release();
+      clearTimeout(deadline);
     }
   }
 
