@@ -114,16 +114,20 @@ describe('пороги худобы', () => {
   const page = (text: number, script: number) =>
     html(`<article><p>${'x'.repeat(text)}</p></article><script>${'s'.repeat(script)}</script>`);
 
-  it('1199 символов при перекосе x83 — оболочка', () => {
-    expect(shouldEscalate({ ...base, html: page(1199, 100_000), extractedTextLength: 1199 })).toEqual(
-      { escalate: true, reason: 'thin_spa' },
-    );
+  // Перекос x50: выше запасного порога (x40), но ниже основного (x80) — так
+  // проверяется именно граница текста, а не соседняя ветка.
+  it('1199 символов при перекосе x50 — оболочка', () => {
+    expect(shouldEscalate({ ...base, html: page(1199, 60_000), extractedTextLength: 1199 })).toEqual({
+      escalate: true,
+      reason: 'thin_spa',
+    });
   });
 
   it('1200 символов при том же перекосе — уже страница', () => {
-    expect(shouldEscalate({ ...base, html: page(1200, 100_000), extractedTextLength: 1200 })).toEqual(
-      { escalate: false, reason: null },
-    );
+    expect(shouldEscalate({ ...base, html: page(1200, 60_000), extractedTextLength: 1200 })).toEqual({
+      escalate: false,
+      reason: null,
+    });
   });
 
   it('перекос чуть ниже x40 не эскалирует', () => {
@@ -139,18 +143,31 @@ describe('пороги худобы', () => {
     });
   });
 
-  it('патологический перекос эскалирует поверх порога текста', () => {
-    // Порог текста не должен быть абсолютным вето: 5000 символов и 800 КБ
+  it('перекос чуть выше x80 эскалирует поверх порога текста', () => {
+    // Порог текста не должен быть абсолютным вето: 5000 символов и 405 КБ
     // скриптов — это оболочка, сколько бы заглушек она ни отрисовала.
-    expect(shouldEscalate({ ...base, html: page(5_000, 800_000), extractedTextLength: 5_000 })).toEqual(
+    expect(shouldEscalate({ ...base, html: page(5_000, 405_000), extractedTextLength: 5_000 })).toEqual(
       { escalate: true, reason: 'thin_spa' },
     );
   });
 
-  it('перекос чуть ниже патологического поверх порога не эскалирует', () => {
+  it('перекос чуть ниже x80 поверх порога не эскалирует', () => {
     expect(
-      shouldEscalate({ ...base, html: page(5_000, 700_000), extractedTextLength: 5_000 }).escalate,
+      shouldEscalate({ ...base, html: page(5_000, 395_000), extractedTextLength: 5_000 }).escalate,
     ).toBe(false);
+  });
+
+  it('обе ветки считают текст одинаково: слабый извлекатель на текстоносной разметке', () => {
+    // Разметка несёт 6199 видимых символов, извлекатель вернул 100. Знаменатель —
+    // максимум из двух, иначе основная ветка звала бы оболочкой обычную таблицу.
+    const rich = html(
+      '<table>' + '<tr><td>ячейка с данными</td></tr>'.repeat(400) + '</table>' +
+        '<script>' + 's'.repeat(20_000) + '</script>',
+    );
+    expect(shouldEscalate({ ...base, html: rich, extractedTextLength: 100 })).toEqual({
+      escalate: false,
+      reason: null,
+    });
   });
 
   it('короткая, но настоящая серверная страница с тяжёлой гидратацией — не оболочка', () => {
@@ -198,7 +215,8 @@ describe('shouldEscalate на всех фикстурах', () => {
       0,
     );
     // Оси независимы, и запас нужен по каждой: порог худобы (1200) листинг
-    // проходит втрое, а до перекоса в скрипты (x40) ему три порядка.
+    // проходит втрое, а до перекоса в скрипты (x40 запасной, x80 основной) —
+    // три порядка.
     expect(textLength).toBeGreaterThan(1_200 * 2);
     expect(scripts / textLength).toBeLessThan(40 / 10);
   });
@@ -210,6 +228,23 @@ describe('shouldEscalate на всех фикстурах', () => {
       reason: 'thin_spa',
     });
   });
+
+  it.each([150, 300, 500])(
+    'substack-post остаётся оболочкой, обвешанный %i символами обвязки',
+    (chars) => {
+      // Эскалация реальной гидрируемой страницы не должна висеть на сотне-другой
+      // символов: баннер о куках, меню и подвал не делают оболочку страницей.
+      const fixture = load('substack-post').replace(
+        /<body([^>]*)>/i,
+        (m) => `${m}<div class="chrome">${'c'.repeat(chars)}</div>`,
+      );
+      const textLength = extract(fixture, 'https://astralcodexten.substack.com/archive').textLength;
+      expect(shouldEscalate({ ...base, html: fixture, extractedTextLength: textLength })).toEqual({
+        escalate: true,
+        reason: 'thin_spa',
+      });
+    },
+  );
 
   it('substack-post эскалирует именно как оболочка', () => {
     const fixture = load('substack-post');
