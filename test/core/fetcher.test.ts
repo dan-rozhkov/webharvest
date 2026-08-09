@@ -351,6 +351,31 @@ describe('createFetcher', () => {
     3000,
   );
 
+  it('отдаёт extracted вместе с результатом на прямом HTTP-пути, без повторного extract в вызывающем коде', async () => {
+    const base = await serve(() => ({ body: article }));
+    const browser = fakeBrowser('<html><body>из браузера</body></html>');
+    const f = createFetcher(deps(browser));
+    const r = await f.fetch(base + '/');
+    expect(r.via).toBe('http');
+    expect(r.extracted.title).toBe('Заголовок');
+    expect(r.extracted.markdown).toContain('текст');
+  });
+
+  it('extracted после эскалации в браузер соответствует ФИНАЛЬНОМУ (браузерному) HTML, а не отброшенной HTTP-попытке', async () => {
+    const shellHtml = '<html><body><div id="root"></div><script>' + 'x'.repeat(10_000) + '</script></body></html>';
+    const base = await serve(() => ({ body: shellHtml }));
+    // Браузер отдаёт настоящую статью — если бы extracted был вычислен из
+    // отброшенной HTTP-попытки (тонкая SPA-оболочка), title/markdown были бы
+    // пустыми/короткими, а не тем, что реально вернул браузер.
+    const browser = fakeBrowser(article);
+    const f = createFetcher(deps(browser));
+    const r = await f.fetch(base + '/');
+    expect(r.via).toBe('browser');
+    expect(r.extracted.title).toBe('Заголовок');
+    expect(r.extracted.markdown).toContain('текст');
+    expect(r.extracted.textLength).toBeGreaterThan(200);
+  });
+
   it('не зовёт браузер ради application/json — эскалация тут бесполезна', async () => {
     const base = await serve(() => ({ type: 'application/json', body: '{"a":1}' }));
     const browser = fakeBrowser(article);

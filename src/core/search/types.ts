@@ -4,6 +4,12 @@ export interface SearchResult {
   snippet: string;
   engine: string;
   content?: string;
+  /** Set only when `content` was cut short (fetchContent embeds each page's
+   *  markdown under a fixed character budget). Mirrors formatScrape's own
+   *  truncation notice so the agent can't mistake a cut-off page for the
+   *  whole thing. */
+  truncated?: boolean;
+  remaining?: number;
   error?: string;
 }
 

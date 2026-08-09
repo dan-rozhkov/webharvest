@@ -13,6 +13,12 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   network: 502,
   search_unavailable: 503,
   daemon_down: 503,
+  // Origin server itself answered with an error status — we're relaying
+  // that failure, not the daemon's own. 502 (Bad Gateway) is the closest
+  // honest fit: the daemon acted as a gateway to a backend that failed.
+  upstream_error: 502,
+  invalid_request: 400,
+  not_found: 404,
   internal: 500,
 };
 

@@ -1,7 +1,7 @@
 import { request } from 'undici';
 import { HarvestError } from './errors.js';
 import { assertAllowedUrl, assertPublicHost } from './url.js';
-import { extract } from './extractor.js';
+import { extract, type Extracted } from './extractor.js';
 import { shouldEscalate, detectChallenge } from './escalation.js';
 import type { DomainQueue } from './politeness.js';
 import type { BrowserPool } from './browser.js';
@@ -14,6 +14,12 @@ export interface FetchResult {
   finalUrl: string;
   status: number;
   via: 'http' | 'browser';
+  /** The extract() result computed from THIS html/finalUrl — the probe run
+   *  to decide whether to escalate doubles as the final extraction, so
+   *  callers (service.scrape) never need to run extract() a second time on
+   *  the same document. After a browser escalation this is the browser's
+   *  final html, never the discarded HTTP attempt. */
+  extracted: Extracted;
 }
 
 export interface FetcherDeps {
@@ -188,7 +194,7 @@ export function createFetcher(deps: FetcherDeps) {
       });
 
       if (!verdict.escalate) {
-        return { html: attempt.html, finalUrl: attempt.finalUrl, status: attempt.status, via: 'http' };
+        return { html: attempt.html, finalUrl: attempt.finalUrl, status: attempt.status, via: 'http', extracted: probe };
       }
 
       // application/json (и прочий нетекстовый content-type) браузер не спасёт:
@@ -276,7 +282,7 @@ export function createFetcher(deps: FetcherDeps) {
       // домен жёг бы полный браузерный рендер на каждый запрос все 24 часа
       // TTL, хотя и дешёвый HTTP-путь всё равно закончился бы тем же blocked.
       deps.hints.markNeedsBrowser(targetHost);
-      return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser' };
+      return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser', extracted: probe };
     });
   }
 

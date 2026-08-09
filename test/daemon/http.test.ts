@@ -4,7 +4,7 @@ import { HarvestError } from '../../src/core/errors.js';
 import type { Service } from '../../src/daemon/service.js';
 
 const stubService = (overrides: Partial<Service> = {}): Service => ({
-  scrape: async ({ url }) => ({ url, title: 'T', markdown: 'M', via: 'http', cached: false }),
+  scrape: async ({ url }) => ({ url, title: 'T', markdown: 'M', via: 'http', cached: false, status: 200 }),
   search: async () => [{ url: 'https://a/', title: 'A', snippet: 's', engine: 'brave' }],
   shutdown: async () => {},
   ...overrides,

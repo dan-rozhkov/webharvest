@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { createService } from '../../src/daemon/service.js';
 import { loadConfig } from '../../src/daemon/config.js';
 import { Cache, scrapeKey } from '../../src/core/cache.js';
+import { HarvestError } from '../../src/core/errors.js';
 
 let server: Server | undefined;
 
@@ -129,6 +131,92 @@ describe('Service.scrape', () => {
     await svc.shutdown();
   });
 
+  it('невалидный url отклоняется как invalid_url, а не падает сырым TypeError/500', async () => {
+    // scrapeKey() -> normalizeUrl() does a bare `new URL(input)`; without
+    // validating up front, this used to bubble up as a raw TypeError from
+    // deep inside the cache-key computation, which the daemon's generic
+    // error handler could only report as 500 "internal — see logs" even
+    // though the agent just passed a malformed url and could fix it itself.
+    const svc = createService(cfg());
+    const err = await svc.scrape({ url: 'hello world' }).catch((e) => e);
+    expect(err).toBeInstanceOf(HarvestError);
+    expect(err.code).toBe('invalid_url');
+    await svc.shutdown();
+  });
+
+  it.each([404, 500])(
+    'статус ошибки (%i) с текстом на странице не кэшируется и приходит как upstream_error, а не отформатированная статья',
+    async (status) => {
+      let hits = 0;
+      server = createServer((_req, res) => {
+        hits++;
+        res.writeHead(status, { 'content-type': 'text/html' });
+        // A styled error page with real, extractable prose (>200 chars) —
+        // exactly the case shouldEscalate() (403/429/503 only) lets through
+        // as if it were a real article.
+        res.end(article);
+      });
+      await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+      const { port } = server!.address() as { port: number };
+      const url = `http://127.0.0.1:${port}/`;
+
+      const svc = createService(cfg());
+      const err = await svc.scrape({ url }).catch((e) => e);
+      expect(err).toBeInstanceOf(HarvestError);
+      expect(err.code).toBe('upstream_error');
+      expect(err.detail).toMatchObject({ status });
+
+      // A second attempt (no refresh) hits the network again — proves the
+      // error page was never written to cache in the first place.
+      const err2 = await svc.scrape({ url }).catch((e) => e);
+      expect(err2.code).toBe('upstream_error');
+      expect(hits).toBe(2);
+      await svc.shutdown();
+    },
+  );
+
+  it('чистит просроченные записи кэша при старте демона (не только лениво при чтении)', async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'webharvest-')), 'cache.db');
+    const seed = new Cache(dbPath);
+    seed.set('stale-key', '{"x":1}', -1000); // already expired
+    seed.close();
+
+    const svc = createService(loadConfig({ cachePath: dbPath, searxngUrl: null, braveApiKey: null, allowPrivate: true }));
+    await svc.shutdown();
+
+    // Query the raw table directly (not Cache.get(), which would itself
+    // lazily delete an expired row on read and thus prove nothing about
+    // whether createService's own startup purge ran).
+    const raw = new Database(dbPath);
+    const count = (raw.prepare('SELECT COUNT(*) AS c FROM entries').get() as { c: number }).c;
+    raw.close();
+    expect(count).toBe(0);
+  });
+
+  it('чистит просроченные записи кэша периодически, не только при старте', async () => {
+    vi.useFakeTimers();
+    try {
+      const dbPath = join(mkdtempSync(join(tmpdir(), 'webharvest-')), 'cache.db');
+      const svc = createService(loadConfig({ cachePath: dbPath, searxngUrl: null, braveApiKey: null, allowPrivate: true }));
+
+      // Seed an expired row AFTER startup — the startup purge alone can't
+      // have caught it.
+      const seed = new Cache(dbPath);
+      seed.set('stale-key', '{"x":1}', -1000);
+      seed.close();
+
+      vi.advanceTimersByTime(60 * 60_000 + 1000);
+      await svc.shutdown();
+
+      const raw = new Database(dbPath);
+      const count = (raw.prepare('SELECT COUNT(*) AS c FROM entries').get() as { c: number }).c;
+      raw.close();
+      expect(count).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shutdown() закрывает браузер, реально запущенный для эскалации', async () => {
     // Статический HTML — пустая оболочка (thin_spa): извлечённый текст ~0,
     // фетчер эскалирует в браузер. Только настоящий рендер выполнит script и
@@ -158,6 +246,37 @@ describe('Service.scrape', () => {
 });
 
 describe('Service.search', () => {
+  it('усечённое содержимое поиска помечено явно (truncated/remaining), а не молча обрезано', async () => {
+    const longArticle =
+      '<html><head><title>Длинная</title></head><body><article><p>' + 'слово '.repeat(2000) + '</p></article></body></html>';
+    const base = await serve(longArticle);
+    const url = base + '/';
+
+    const searxng = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ results: [{ url, title: 'T', content: 'snippet', engine: 'test' }] }));
+    });
+    await new Promise<void>((r) => searxng.listen(0, '127.0.0.1', r));
+    const { port: searxngPort } = searxng.address() as { port: number };
+
+    const svc = createService(loadConfig({
+      cachePath: ':memory:',
+      searxngUrl: `http://127.0.0.1:${searxngPort}`,
+      braveApiKey: null,
+      allowPrivate: true,
+    }));
+
+    try {
+      const results = await svc.search({ query: 'x', fetchContent: true });
+      expect(results[0]?.content?.length).toBeLessThanOrEqual(8000);
+      expect(results[0]?.truncated).toBe(true);
+      expect(results[0]?.remaining).toBeGreaterThan(0);
+    } finally {
+      await svc.shutdown();
+      await new Promise<void>((r) => searxng.close(() => r()));
+    }
+  });
+
   it('бросает search_unavailable, когда провайдеры не настроены', async () => {
     const svc = createService(cfg());
     await expect(svc.search({ query: 'что угодно' })).rejects.toMatchObject({ code: 'search_unavailable' });

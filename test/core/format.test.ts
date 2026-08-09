@@ -71,7 +71,7 @@ describe('truncateMarkdown', () => {
 describe('formatScrape', () => {
   const payload = {
     url: 'https://example.com/a', title: 'Заголовок',
-    markdown: 'Тело статьи.', via: 'browser' as const, cached: true,
+    markdown: 'Тело статьи.', via: 'browser' as const, cached: true, status: 200,
   };
 
   it('ставит заголовок, URL и метаданные в шапку', () => {
@@ -127,6 +127,22 @@ describe('formatSearch', () => {
 
   it('честно сообщает о пустой выдаче', () => {
     expect(formatSearch('нечто', [])).toMatch(/ничего не найдено/i);
+  });
+
+  it('сообщает об усечении контента поиска явно, а не молча обрывает текст', () => {
+    const out = formatSearch('q', [
+      { url: 'https://a.com/', title: 'A', snippet: 's', engine: 'brave', content: 'начало текста', truncated: true, remaining: 12345 },
+    ]);
+    expect(out).toContain('начало текста');
+    expect(out).toMatch(/обрезано|осталось/i);
+    expect(out).toContain('12');
+  });
+
+  it('не пишет отметку об усечении, если контент не был обрезан', () => {
+    const out = formatSearch('q', [
+      { url: 'https://a.com/', title: 'A', snippet: 's', engine: 'brave', content: 'весь текст целиком' },
+    ]);
+    expect(out).not.toMatch(/обрезано|осталось/i);
   });
 
   it('нумерует несколько результатов правильно (1, 2, 3)', () => {

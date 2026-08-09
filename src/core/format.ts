@@ -6,6 +6,10 @@ export interface ScrapePayload {
   markdown: string;
   via: 'http' | 'browser';
   cached: boolean;
+  /** HTTP status of the response the markdown was extracted from. Always
+   *  < 400 — service.scrape() throws upstream_error and never caches or
+   *  returns a payload built from an error-status response. */
+  status: number;
   links?: { href: string; text: string }[];
 }
 
@@ -65,7 +69,12 @@ export function formatSearch(query: string, results: SearchResult[]): string {
     const lines = [`${i + 1}. **${r.title || r.url}** — ${host}`, `   ${r.url}`];
     if (r.snippet) lines.push(`   ${r.snippet}`);
     if (r.error) lines.push(`   ⚠️ Содержимое не загружено: ${r.error}`);
-    if (r.content) lines.push('', r.content);
+    if (r.content) {
+      lines.push('', r.content);
+      if (r.truncated) {
+        lines.push('', `_Обрезано: осталось ещё ${nf.format(r.remaining ?? 0)} символов._`);
+      }
+    }
     return lines.join('\n');
   });
 
