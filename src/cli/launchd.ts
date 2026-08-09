@@ -8,7 +8,19 @@ export function plistContents(opts: {
   daemonPath: string;
   logPath: string;
   port: number;
+  /** launchd agents do NOT inherit the shell environment, unlike the manual
+   *  `webharvest start` spawn path (which passes `env: process.env`
+   *  through). Without threading this in, a user who exported
+   *  BRAVE_API_KEY, ran `install`, and whose SearXNG happens to be down
+   *  gets "no provider answered" with no hint that their configured
+   *  fallback was never actually passed to the daemon. Omitted from the
+   *  plist entirely when unset — never written as an empty <string/>. */
+  braveApiKey?: string | null;
 }): string {
+  const envEntries = [`    <key>WEBHARVEST_PORT</key>\n    <string>${opts.port}</string>`];
+  if (opts.braveApiKey) {
+    envEntries.push(`    <key>BRAVE_API_KEY</key>\n    <string>${esc(opts.braveApiKey)}</string>`);
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -22,8 +34,7 @@ export function plistContents(opts: {
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>WEBHARVEST_PORT</key>
-    <string>${opts.port}</string>
+${envEntries.join('\n')}
   </dict>
   <key>RunAtLoad</key>
   <true/>

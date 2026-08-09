@@ -77,6 +77,48 @@ describe('plistContents', () => {
     expect(plist).toContain('a &lt; b &amp; c &gt; d');
   });
 
+  it('прописывает BRAVE_API_KEY в EnvironmentVariables, когда он задан', () => {
+    const withKey = plistContents({
+      nodePath: '/opt/homebrew/bin/node',
+      daemonPath: '/x/index.js',
+      logPath: '/y/log',
+      port: 8787,
+      braveApiKey: 'sk-fake-brave-key',
+    });
+    expect(withKey).toContain('<key>BRAVE_API_KEY</key>');
+    expect(withKey).toContain('<string>sk-fake-brave-key</string>');
+  });
+
+  it('не пишет BRAVE_API_KEY в plist, когда он не задан', () => {
+    const withoutKey = plistContents({
+      nodePath: '/opt/homebrew/bin/node',
+      daemonPath: '/x/index.js',
+      logPath: '/y/log',
+      port: 8787,
+    });
+    expect(withoutKey).not.toContain('BRAVE_API_KEY');
+
+    const nullKey = plistContents({
+      nodePath: '/opt/homebrew/bin/node',
+      daemonPath: '/x/index.js',
+      logPath: '/y/log',
+      port: 8787,
+      braveApiKey: null,
+    });
+    expect(nullKey).not.toContain('BRAVE_API_KEY');
+  });
+
+  it('экранирует опасные символы в BRAVE_API_KEY так же, как в остальных полях', () => {
+    const plist = plistContents({
+      nodePath: '/n',
+      daemonPath: '/x',
+      logPath: '/y',
+      port: 1,
+      braveApiKey: 'a&b<c>',
+    });
+    expect(plist).toContain('a&amp;b&lt;c&gt;');
+  });
+
   it('не экранирует кавычки в текстовом контенте (они не опасны в XML text content)', () => {
     // Quotes only need escaping in XML attributes, not in text content.
     // ProgramArguments values are XML text elements (<string>), not attributes.

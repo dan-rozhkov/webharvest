@@ -8,6 +8,7 @@ import { request } from 'undici';
 import { loadConfig } from '../daemon/config.js';
 import { plistContents, LABEL } from './launchd.js';
 import { reconcileBeforeInstall, stopManualDaemon } from './daemon-process.js';
+import { openLogSink, describeLogsAvailability } from './log-file.js';
 
 const config = loadConfig();
 const here = dirname(fileURLToPath(import.meta.url));
@@ -69,9 +70,10 @@ const commands: Record<string, () => Promise<void>> = {
 
     // Otherwise, start daemon as unsupervised background process
     mkdirSync(home, { recursive: true });
+    const logFd = openLogSink(logPath);
     const child = spawn(process.execPath, [daemonPath], {
       detached: true,
-      stdio: ['ignore', 'ignore', 'ignore'],
+      stdio: ['ignore', logFd, logFd],
       env: process.env,
     });
     // Record the PID so stop can kill it precisely
@@ -135,6 +137,11 @@ const commands: Record<string, () => Promise<void>> = {
   },
 
   async logs() {
+    const status = describeLogsAvailability(logPath);
+    if (!status.available) {
+      console.log(status.message);
+      return;
+    }
     spawn('tail', ['-f', logPath], { stdio: 'inherit' });
   },
 
@@ -158,6 +165,11 @@ const commands: Record<string, () => Promise<void>> = {
         daemonPath,
         logPath,
         port: config.port,
+        // config.braveApiKey already resolved BRAVE_API_KEY from the
+        // environment (see loadConfig()) at the moment `install` runs —
+        // threading it through here is what actually gets it into the
+        // launchd job's environment, which does not inherit ours.
+        braveApiKey: config.braveApiKey,
       }),
     );
     // First unload to clear any existing Disabled override
