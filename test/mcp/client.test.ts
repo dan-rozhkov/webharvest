@@ -35,6 +35,20 @@ describe('createDaemonClient', () => {
     expect(err.message).toContain('webharvest start');
   });
 
+  it('бросает daemon_down (не сырой SyntaxError) когда порт отвечает, но не JSON', async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<html><body>это не демон webharvest</body></html>');
+    });
+    await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
+    const { port } = server!.address() as { port: number };
+    const c = createDaemonClient(`http://127.0.0.1:${port}`);
+    const err = await c.scrape({ url: 'https://a/' }).catch((e) => e);
+    expect(err.code).toBe('daemon_down');
+    expect(err.message).not.toMatch(/Unexpected token/);
+    expect(err.message).toContain('webharvest start');
+  });
+
   it('поиск распаковывает {results} из ответа демона', async () => {
     const base = await serve(200, { results: [{ url: 'https://a/', title: 'A', snippet: 's', engine: 'brave' }] });
     const c = createDaemonClient(base);

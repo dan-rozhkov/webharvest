@@ -30,7 +30,22 @@ export function createDaemonClient(baseUrl: string) {
       );
     }
 
-    const payload = (await res.body.json()) as T & ErrorBody;
+    let payload: T & ErrorBody;
+    try {
+      payload = (await res.body.json()) as T & ErrorBody;
+    } catch {
+      // Something answered on that port/URL, but it wasn't JSON - another
+      // dev server, a proxy's HTML error page, anything but the daemon.
+      // Left unguarded, res.body.json() rejects with a raw SyntaxError that
+      // escapes call() as a non-HarvestError, so the agent would see
+      // "Не удалось: Unexpected token <..." instead of an actionable
+      // message about what was actually reached.
+      throw new HarvestError(
+        'daemon_down',
+        `На ${baseUrl}${path} ответил не демон webharvest (тело не JSON). ` +
+          'Проверь, что порт не занят другим процессом, и перезапусти демон командой `webharvest start`.',
+      );
+    }
     if (res.statusCode >= 400) {
       const err = payload.error;
       throw new HarvestError(err?.code ?? 'network', err?.message ?? `Демон вернул ${res.statusCode}`, err?.detail);
