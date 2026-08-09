@@ -8,7 +8,7 @@ interface BraveRaw {
 const stripTags = (s: string) =>
   s
     .replace(/<(?:[^>"']|"[^"]*"|'[^']*')*>/g, '') // complete tags with quoted attributes
-    .replace(/<[^>]*$/, '') // incomplete tag at end
+    .replace(/<\/?[a-zA-Z][^>]*$/, '') // truncated tag start at end (< followed by letter or </)
     .trim();
 
 export function parseBrave(raw: unknown, limit: number): SearchResult[] {

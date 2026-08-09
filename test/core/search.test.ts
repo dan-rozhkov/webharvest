@@ -88,6 +88,54 @@ describe('parseBrave', () => {
     expect(r[0]!.title).toBe('title');
     expect(r[0]!.snippet).toBe('snippet ends with');
   });
+
+  it('не удаляет сравнение < в прозе (a < b)', () => {
+    const r = parseBrave({
+      web: {
+        results: [
+          {
+            url: 'https://example.com',
+            title: 'a < b',
+            description: 'compare values a < b',
+          },
+        ],
+      },
+    }, 10);
+    expect(r[0]!.title).toBe('a < b');
+    expect(r[0]!.snippet).toBe('compare values a < b');
+  });
+
+  it('не удаляет сравнение < в коде (if (a < b))', () => {
+    const r = parseBrave({
+      web: {
+        results: [
+          {
+            url: 'https://example.com',
+            title: 'if (a < b)',
+            description: 'condition if (a < b) true',
+          },
+        ],
+      },
+    }, 10);
+    expect(r[0]!.title).toBe('if (a < b)');
+    expect(r[0]!.snippet).toBe('condition if (a < b) true');
+  });
+
+  it('не удаляет сравнение в природном языке (Returns true if a < b)', () => {
+    const r = parseBrave({
+      web: {
+        results: [
+          {
+            url: 'https://example.com',
+            title: 'Returns true if a < b',
+            description: 'Function returns true if a < b',
+          },
+        ],
+      },
+    }, 10);
+    expect(r[0]!.title).toBe('Returns true if a < b');
+    expect(r[0]!.snippet).toBe('Function returns true if a < b');
+  });
 });
 
 describe('dedupeResults', () => {
