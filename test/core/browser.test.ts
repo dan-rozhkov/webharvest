@@ -81,6 +81,20 @@ describe('BrowserPool', () => {
     expect(r.finalUrl).toContain('/to');
   });
 
+  it('бросает too_large, если отрендеренный HTML превысил лимит', async () => {
+    const base = await serve(() => ({ body: '<html><body>' + 'x'.repeat(5000) + '</body></html>' }));
+    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxBytes: 1000 });
+    const err = await pool.render(base + '/').catch((e) => e);
+    expect(err).toMatchObject({ code: 'too_large' });
+  });
+
+  it('не бросает too_large, когда HTML укладывается в лимит', async () => {
+    const base = await serve(() => ({ body: '<html><body><p>малeнький текст</p></body></html>' }));
+    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxBytes: 1000 });
+    const r = await pool.render(base + '/');
+    expect(r.html).toContain('малeнький');
+  });
+
   it('уважает кодировку, объявленную через meta charset, а не навязывает UTF-8', async () => {
     const word = 'Привет';
     const body = Buffer.concat([

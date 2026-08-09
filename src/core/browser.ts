@@ -17,6 +17,10 @@ export interface BrowserPoolOptions {
   idleTimeoutMs?: number;
   maxConcurrent?: number;
   headless?: boolean;
+  /** Mirrors httpGet's own byte cap (fetcher.ts) — a heavy SPA rendered by a
+   *  real browser is otherwise unbounded, unlike the HTTP path, and can send
+   *  tens of MB through jsdom/Readability/Defuddle and into SQLite. */
+  maxBytes?: number;
 }
 
 const UA =
@@ -76,6 +80,7 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   const idleTimeoutMs = opts.idleTimeoutMs ?? 5 * 60_000;
   const maxConcurrent = opts.maxConcurrent ?? 3;
   const headless = opts.headless ?? true;
+  const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
 
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
@@ -195,8 +200,17 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
 
       // Retry page.content() if it fails with navigation race condition.
       const html = await retryPageContent(() => page.content());
+      if (Buffer.byteLength(html, 'utf8') > maxBytes) {
+        throw new HarvestError('too_large', `Отрендеренная страница превысила ${maxBytes} байт: ${url}`);
+      }
       return { html, finalUrl: page.url(), status: response?.status() ?? 0 };
     } catch (e) {
+      // A too_large thrown just above is already the right HarvestError —
+      // rethrow it as-is instead of falling into the message-sniffing below,
+      // which would otherwise misclassify it as 'network' (its message
+      // matches neither the timeout nor any special case) and hide the real
+      // reason from the caller.
+      if (HarvestError.is(e)) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       if (/Timeout|timeout/i.test(msg)) {
         throw new HarvestError('timeout', `Браузер не дождался ${url} за ${timeout} мс`);
