@@ -91,7 +91,8 @@ Let REPO be its absolute path (get it with `pwd`, never guess, never use `~`).
 
 2. Build.
      cd REPO && npm install && npx playwright install chromium && npm run build
-   Verify REPO/dist/mcp/index.js and REPO/dist/cli/index.js now exist.
+   Verify REPO/dist/mcp/index.js, REPO/dist/cli/index.js and
+   REPO/dist/daemon/index.js now exist.
 
 3. Search backend (SearXNG). If REPO/searxng/settings.yml does not exist:
      cp searxng/settings.yml.example searxng/settings.yml
@@ -107,7 +108,9 @@ Let REPO be its absolute path (get it with `pwd`, never guess, never use `~`).
 
 4. Daemon. Run `npm link` in REPO so the `webharvest` command exists (if that
    needs sudo on this machine, tell me instead of running sudo yourself).
-   On macOS: `webharvest install` then `webharvest start`.
+   On macOS: `webharvest install` — this already loads the launchd job and
+   starts the daemon, so run `webharvest status` next and only call
+   `webharvest start` if it reports the daemon is not running.
    On Linux/Windows there is no launchd integration — start the daemon in the
    background yourself with `node REPO/dist/daemon/index.js` and tell me it
    will not survive a reboot.
@@ -121,10 +124,15 @@ Let REPO be its absolute path (get it with `pwd`, never guess, never use `~`).
    the env var WEBHARVEST_URL for the server.
 
    Do this for each agent that is actually installed on this machine — check
-   first, skip the rest, and never overwrite an existing "webharvest" entry
-   without telling me:
+   with `command -v claude`, `command -v codex`, … and not by the existence of
+   a ~/.something directory, which is often left behind by an uninstall. Skip
+   the rest, and never overwrite an existing "webharvest" entry without
+   telling me:
 
-   - Claude Code:  claude mcp add webharvest -- node REPO/dist/mcp/index.js
+   - Claude Code:
+       claude mcp add -s user webharvest -- node REPO/dist/mcp/index.js
+     `-s user` matters: without it the server is registered only for the
+     directory you happen to be in.
    - Codex: add to ~/.codex/config.toml
        [mcp_servers.webharvest]
        command = "node"
@@ -139,11 +147,20 @@ Let REPO be its absolute path (get it with `pwd`, never guess, never use `~`).
    If an agent you find is not in this list, look up its MCP config location in
    its own docs and use the same command/args.
 
-6. Verify end to end. For Claude Code run `claude mcp list` and confirm
-   webharvest is connected. For the others, tell me to restart the agent and
-   check that the tools `scrape` and `search` appear. If you yourself can reach
-   the new server, call `search` with the query "model context protocol" and
-   `scrape` on the first result URL, and show me the output.
+6. Verify end to end. Talk to the MCP server directly over stdio, so you do
+   not have to restart anything to know it works:
+     printf '%s\n' \
+       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
+       '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+       '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"model context protocol","limit":3}}}' \
+       | node REPO/dist/mcp/index.js 2>/dev/null | tail -1
+   That must come back with real search results, not "Не удалось" — the latter
+   means the daemon or SearXNG is not reachable, so go back to step 3 or 4.
+   Then repeat with a `scrape` call on one of the returned URLs.
+   Also confirm the registration itself: `claude mcp list` for Claude Code
+   (expect "webharvest … ✔ Connected"), `codex mcp list` for Codex. For the
+   others, tell me to restart the agent and check that the tools `scrape` and
+   `search` appear.
 
 7. Report: what you installed, the exact paths and config files you touched,
    what still needs a restart, and anything you skipped and why.
