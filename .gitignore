@@ -6,3 +6,6 @@ dist/
 # SearXNG config carries a per-install secret_key — keep the real one out of git.
 # Copy searxng/settings.yml.example to searxng/settings.yml and generate a secret.
 searxng/settings.yml
+
+# Local design docs — not for the public repo.
+docs/superpowers/
