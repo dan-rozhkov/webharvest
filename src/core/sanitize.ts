@@ -18,14 +18,39 @@ function replaceImages(doc: Document): void {
       img.remove();
       continue;
     }
-    img.replaceWith(doc.createTextNode(`изображение: ${alt}`));
+    // Инлайновые иконки в заголовках и прозе — обычное дело: без разделителя
+    // текст и alt слипаются в мусорный токен («текстизображение: схемапосле»).
+    // Добавляем пробел с той стороны, где соседнего пробела ещё нет; отсутствие
+    // соседа или сосед, не являющийся текстовым узлом, тоже считаются «нет».
+    const prev = img.previousSibling;
+    const next = img.nextSibling;
+    const hasLeadingSpace = prev !== null && prev.nodeType === 3 && /\s$/.test(prev.nodeValue ?? '');
+    const hasTrailingSpace = next !== null && next.nodeType === 3 && /^\s/.test(next.nodeValue ?? '');
+    const left = prev === null || hasLeadingSpace ? '' : ' ';
+    const right = next === null || hasTrailingSpace ? '' : ' ';
+    img.replaceWith(doc.createTextNode(`${left}изображение: ${alt}${right}`));
   }
 }
 
-/** Невидимые символы: soft hyphen, zero-width, word joiner, BOM. */
+/**
+ * Невидимые символы: soft hyphen, zero-width space, word joiner, BOM.
+ * ZWNJ (U+200C) и ZWJ (U+200D) сюда сознательно не входят: это не типографский
+ * мусор, а значимые символы — ZWNJ разделяет словоформы в персидском, арабском
+ * и индийских письменностях, а ZWJ склеивает emoji-последовательности (семья,
+ * флаги). Их удаление меняет смысл текста.
+ */
 // Только escape-последовательности: литералы этих символов невидимы в исходнике
 // и теряются при любом копировании.
-const INVISIBLE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+const INVISIBLE = /[\u00AD\u200B\u2060\uFEFF]/g;
+
+/**
+ * Та же чистка невидимых символов, но для отдельной строки, а не DOM —
+ * для `title`/`description`, которые читаются из `<head>` до вызова
+ * `sanitizeDocument` (который обходит только `body`).
+ */
+export function stripInvisibleFromText(text: string): string {
+  return text.replace(INVISIBLE, '');
+}
 
 /** Значки, которыми генераторы документации помечают ссылку на саму себя. */
 const PERMALINK_GLYPHS = /[¶#§🔗]/gu;
@@ -49,13 +74,16 @@ function stripPermalinks(doc: Document, baseUrl: string): void {
   for (const a of Array.from(doc.querySelectorAll('a[href]'))) {
     const raw = a.getAttribute('href');
     if (!raw) continue;
+    // `target.hash` теряет голый `#`: `new URL('#', base).hash === ''`, из-за
+    // чего `href="#"` и `href="/page#"` не отличить от ссылки вообще без
+    // фрагмента. Проверяем наличие `#` по сырой строке, а не по разобранному URL.
+    if (!raw.includes('#')) continue;
     let target: URL;
     try {
       target = new URL(raw, base);
     } catch {
       continue;
     }
-    if (!target.hash) continue;
     target.hash = '';
     if (target.href !== base.href) continue;
 
@@ -84,7 +112,10 @@ const TRACKING_PARAMS = new Set([
 ]);
 
 function isTracking(name: string): boolean {
-  return name.startsWith('utm_') || TRACKING_PARAMS.has(name);
+  // Почтовые клиенты и CMS регулярно поднимают регистр имён параметров
+  // (`UTM_SOURCE`); значения при этом не трогаем.
+  const lower = name.toLowerCase();
+  return lower.startsWith('utm_') || TRACKING_PARAMS.has(lower);
 }
 
 /**
@@ -122,11 +153,18 @@ function stripTrackingParams(doc: Document, baseUrl: string): void {
     const path = beforeHash.slice(0, qIndex);
     const query = beforeHash.slice(qIndex + 1);
 
+    // Сперва пробуем разобрать `raw` сам по себе: абсолютная ссылка не должна
+    // зависеть от валидности `baseUrl`. `sanitizeDocument` экспортирован, и
+    // невалидный `baseUrl` — не то же самое, что нерезолвимый относительный href.
     let parsed: URL;
     try {
-      parsed = new URL(raw, baseUrl);
+      parsed = new URL(raw);
     } catch {
-      continue;
+      try {
+        parsed = new URL(raw, baseUrl);
+      } catch {
+        continue;
+      }
     }
     const hasTracking = Array.from(parsed.searchParams.keys()).some(isTracking);
     if (!hasTracking) continue;
@@ -162,10 +200,17 @@ function stripInvisibleChars(doc: Document): void {
 }
 
 export function sanitizeDocument(doc: Document, baseUrl: string): void {
-  // Порядок важен: якорь `<a href="#x"><img alt=""></a>` опознаётся как пустой
-  // только до того, как картинки превратятся в текст.
-  stripPermalinks(doc, baseUrl);
+  // Порядок важен: `replaceImages` должен идти первым. Если сначала убирать
+  // permalink-якоря, то `<a href="#fig1"><img alt="Диаграмма потока данных">
+  // </a>` на момент проверки текста якоря ещё содержит только картинку —
+  // `textContent` у неё пустой, и осмысленная картинка удаляется вместе
+  // с «пустым» на вид якорем. Если сначала превращать картинки в текст, то
+  // декоративный случай `<a href="#x"><img alt=""></a>` всё равно схлопывается
+  // корректно: картинка без alt удаляется своим правилом, якорь становится
+  // пустым и его ловит `stripPermalinks`, а картинки с осмысленным alt к этому
+  // моменту уже стали видимым текстом и выживают.
   replaceImages(doc);
+  stripPermalinks(doc, baseUrl);
   stripTrackingParams(doc, baseUrl);
   stripInvisibleChars(doc);
 }

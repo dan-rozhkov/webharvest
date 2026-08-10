@@ -104,6 +104,16 @@ describe('extract: свойства', () => {
     expect(links).toContainEqual({ href: 'https://example.com/up', text: 'вверх' });
   });
 
+  it('чистит невидимые символы в title и description', () => {
+    const html =
+      '<html><head><title>a\u200Bb</title>' +
+      '<meta name="description" content="c\uFEFFd"></head>' +
+      '<body><article><p>обычный текст статьи без ничего особенного тут</p></article></body></html>';
+    const { title, description } = extract(html, 'https://example.com/');
+    expect(title).toBe('ab');
+    expect(description).toBe('cd');
+  });
+
   it('использует <base href>, а не URL страницы, для относительных ссылок', () => {
     const html =
       '<html><head><base href="https://cdn.example.com/assets/"></head>' +

@@ -3,7 +3,7 @@ import { Readability } from '@mozilla/readability';
 import DefuddleExport from 'defuddle';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
-import { sanitizeDocument } from './sanitize.js';
+import { sanitizeDocument, stripInvisibleFromText } from './sanitize.js';
 
 export interface ExtractedLink {
   href: string;
@@ -389,8 +389,10 @@ export function extract(html: string, url: string): Extracted {
 
   return {
     markdown,
-    title: documentTitle || picked.title?.trim() || '',
-    description,
+    // `sanitizeDocument` чистит невидимые символы только в body: title и
+    // description читаются из head раньше, поэтому чистим их отдельно.
+    title: stripInvisibleFromText(documentTitle || picked.title?.trim() || ''),
+    description: description === null ? null : stripInvisibleFromText(description),
     links,
     meta,
     textLength: plainTextLength(markdown),

@@ -40,6 +40,37 @@ describe('sanitize: картинки', () => {
     expect(html).not.toContain('изображение');
     expect(html).not.toContain('cdn.example.com');
   });
+
+  it('отделяет alt пробелом от соседних слов, если пробела ещё нет', () => {
+    const html = clean('<p>текст<img src="https://cdn.example.com/a.png" alt="схема">после</p>');
+    expect(html).toContain('текст изображение: схема после');
+  });
+
+  it('не плодит двойных пробелов, если сосед уже отделён пробелом', () => {
+    const html = clean('<p>текст <img src="https://cdn.example.com/a.png" alt="схема"> после</p>');
+    expect(html).toContain('текст изображение: схема после');
+    expect(html).not.toMatch(/ {2,}/);
+  });
+
+  it('отделяет alt от заголовка, к которому картинка приклеена справа', () => {
+    const html = clean('<h2>Заголовок<img src="https://cdn.example.com/icon.png" alt="иконка"></h2>');
+    expect(html).toContain('Заголовок изображение: иконка');
+  });
+
+  it('сохраняет содержательную картинку внутри permalink-подобного якоря', () => {
+    const html = clean(
+      '<figure><a href="/page#fig1"><img src="https://cdn.example.com/d.png" alt="Диаграмма потока данных"></a><figcaption>Рис 1</figcaption></figure>',
+    );
+    expect(html).toContain('изображение: Диаграмма потока данных');
+  });
+
+  it('всё равно убирает декоративный якорь-картинку без alt', () => {
+    const html = clean(
+      '<h2>Заголовок<a href="#x"><img src="https://cdn.example.com/deco.png" alt=""></a></h2>',
+    );
+    expect(html).not.toContain('#x');
+    expect(html).not.toContain('cdn.example.com');
+  });
 });
 
 describe('sanitize: permalink-якоря', () => {
@@ -71,6 +102,16 @@ describe('sanitize: permalink-якоря', () => {
   it('оставляет ссылку на ту же страницу без хеша', () => {
     const html = clean('<p><a href="/page">та же страница</a></p>');
     expect(html).toContain('href="/page"');
+  });
+
+  it('убирает голый якорь href="#"', () => {
+    const html = clean('<p><a href="#">\u200B</a></p>');
+    expect(html).not.toContain('href="#"');
+  });
+
+  it('убирает якорь href="/page#" на ту же страницу с пустым хешем', () => {
+    const html = clean('<p><a href="/page#">\u200B</a></p>');
+    expect(html).not.toContain('href="/page#"');
   });
 });
 
@@ -134,5 +175,36 @@ describe('sanitize: невидимые символы', () => {
   it('не трогает невидимые символы в inline-коде', () => {
     const html = clean('<p>смотри <code>a\u200Bb</code></p>');
     expect(html).toContain('a\u200Bb');
+  });
+
+  it('не трогает ZWNJ в персидском тексте', () => {
+    const html = clean('<p>\u0645\u06CC\u200C\u0631\u0648\u062F</p>');
+    expect(html).toContain('\u0645\u06CC\u200C\u0631\u0648\u062F');
+  });
+
+  it('не трогает ZWJ внутри emoji-последовательности', () => {
+    const html = clean('<p>\u{1F468}\u200D\u{1F469}\u200D\u{1F467}</p>');
+    expect(html).toContain('\u{1F468}\u200D\u{1F469}\u200D\u{1F467}');
+  });
+});
+
+describe('sanitize: регистр трекинговых параметров', () => {
+  it('распознаёт UTM в верхнем регистре', () => {
+    const html = clean('<a href="https://e.org/s?UTM_SOURCE=x&id=1">поиск</a>');
+    expect(html).toContain('id=1');
+    expect(html).not.toContain('UTM_SOURCE');
+  });
+});
+
+describe('sanitize: невалидный baseUrl не отключает трекинг-чистку', () => {
+  it('чистит трекинг у абсолютной ссылки, даже если baseUrl не парсится', () => {
+    const doc = new JSDOM(
+      '<html><body><a href="https://shop.example.com/item?utm_source=x&id=1">товар</a></body></html>',
+      { url: PAGE },
+    ).window.document;
+    sanitizeDocument(doc, 'not a valid url');
+    const html = doc.body.innerHTML;
+    expect(html).toContain('id=1');
+    expect(html).not.toContain('utm_source');
   });
 });
