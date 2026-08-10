@@ -87,26 +87,53 @@ function isTracking(name: string): boolean {
   return name.startsWith('utm_') || TRACKING_PARAMS.has(name);
 }
 
-/** Хвосты рекламных кампаний в ссылках: место занимают, смысла не несут. */
+/**
+ * Имя параметра из сырого куска запроса `name=value` (или голого `name`)
+ * — с той же деэкодировкой, что использует `URLSearchParams`, но без
+ * сборки самой строки, чтобы не трогать процентное кодирование значения.
+ */
+function paramName(pair: string): string {
+  const eqIndex = pair.indexOf('=');
+  const raw = eqIndex === -1 ? pair : pair.slice(0, eqIndex);
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, ' '));
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Хвосты рекламных кампаний в ссылках: место занимают, смысла не несут.
+ * Строку href пересобираем вручную, а не через `url.href`: пересборка через
+ * `URL` абсолютизирует относительные ссылки, переэкодирует `%20` в `+` у
+ * значений и подставляет умолчания (порт, хвостовой `/`) — этого никто
+ * не просил, задача — убрать конкретные параметры, а не нормализовать URL.
+ * `URL` используется только как парсер, чтобы понять, какие параметры есть.
+ */
 function stripTrackingParams(doc: Document, baseUrl: string): void {
   for (const a of Array.from(doc.querySelectorAll('a[href]'))) {
     const raw = a.getAttribute('href');
-    if (!raw || !raw.includes('?')) continue;
-    let url: URL;
+    if (!raw) continue;
+    const hashIndex = raw.indexOf('#');
+    const fragment = hashIndex === -1 ? '' : raw.slice(hashIndex);
+    const beforeHash = hashIndex === -1 ? raw : raw.slice(0, hashIndex);
+    const qIndex = beforeHash.indexOf('?');
+    if (qIndex === -1) continue;
+    const path = beforeHash.slice(0, qIndex);
+    const query = beforeHash.slice(qIndex + 1);
+
+    let parsed: URL;
     try {
-      url = new URL(raw, baseUrl);
+      parsed = new URL(raw, baseUrl);
     } catch {
       continue;
     }
-    let touched = false;
-    for (const name of Array.from(url.searchParams.keys())) {
-      if (!isTracking(name)) continue;
-      url.searchParams.delete(name);
-      touched = true;
-    }
-    if (!touched) continue;
-    // URL оставляет висеть `?` после удаления последнего параметра.
-    a.setAttribute('href', url.search === '' ? url.href.replace(/\?$/, '') : url.href);
+    const hasTracking = Array.from(parsed.searchParams.keys()).some(isTracking);
+    if (!hasTracking) continue;
+
+    const keptPairs = query.split('&').filter((pair) => pair !== '' && !isTracking(paramName(pair)));
+    const newQuery = keptPairs.length > 0 ? `?${keptPairs.join('&')}` : '';
+    a.setAttribute('href', `${path}${newQuery}${fragment}`);
   }
 }
 

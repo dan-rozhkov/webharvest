@@ -101,4 +101,20 @@ describe('sanitize: трекинговые параметры', () => {
     const html = clean('<a href="https://example.org/plain">пост</a>');
     expect(html).toContain('href="https://example.org/plain"');
   });
+
+  it('оставляет относительную ссылку относительной', () => {
+    const html = clean('<a href="/page?utm_source=x&id=7">тут</a>');
+    expect(html).toContain('href="/page?id=7"');
+  });
+
+  it('не переэкодирует значимые параметры', () => {
+    const html = clean('<a href="https://example.org/s?q=a%20b&utm_source=x">поиск</a>');
+    expect(html).toContain('q=a%20b');
+    expect(html).not.toContain('q=a+b');
+  });
+
+  it('сохраняет фрагмент после чистки', () => {
+    const html = clean('<a href="https://example.org/doc?utm_source=x#part">док</a>');
+    expect(html).toContain('href="https://example.org/doc#part"');
+  });
 });
