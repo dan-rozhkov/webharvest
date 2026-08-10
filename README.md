@@ -67,6 +67,88 @@ You control the browser automation — no opaque API calls, no subscription, all
    ```
    Replace the path with the actual path to your clone. You can find it with `pwd` in the webharvest directory.
 
+### Automated Setup (hand this prompt to an AI agent)
+
+If you'd rather not run the steps above by hand, paste the prompt below into an
+agent that can execute shell commands and edit files (Claude Code, Codex,
+Cursor, Gemini CLI, …). It performs the same installation and then registers
+webharvest as an MCP server in whichever agents you have installed.
+
+Read it before you run it: it installs a launchd job, starts a Docker
+container, and edits your agents' MCP config files.
+
+````text
+You are setting up "webharvest" — a local MCP server that gives you web search
+and web scraping. Work through the steps in order, run every verification
+command, and stop and report if one fails instead of continuing.
+
+Repository: the directory you were pointed at, or clone it if I gave you a URL.
+Let REPO be its absolute path (get it with `pwd`, never guess, never use `~`).
+
+1. Prerequisites. Check `node --version` (must be 20+), `docker --version`, and
+   `docker compose version`. If Docker is not installed or its daemon is not
+   running, tell me and stop — search will not work without it.
+
+2. Build.
+     cd REPO && npm install && npx playwright install chromium && npm run build
+   Verify REPO/dist/mcp/index.js and REPO/dist/cli/index.js now exist.
+
+3. Search backend (SearXNG). If REPO/searxng/settings.yml does not exist:
+     cp searxng/settings.yml.example searxng/settings.yml
+   then replace the literal CHANGE_ME_TO_A_RANDOM_STRING in it with the output
+   of `openssl rand -hex 32`. Never commit this file — it is gitignored on
+   purpose. In that file confirm `formats` contains `json` and `limiter` is
+   `false`; fix them if not. Then:
+     docker compose up -d
+   Wait ~10 s and verify search actually answers with JSON:
+     curl -s 'http://127.0.0.1:8080/search?q=hello&format=json' | head -c 100
+   HTML or a 403 back means the settings above are wrong. Fix and restart the
+   container; do not move on.
+
+4. Daemon. Run `npm link` in REPO so the `webharvest` command exists (if that
+   needs sudo on this machine, tell me instead of running sudo yourself).
+   On macOS: `webharvest install` then `webharvest start`.
+   On Linux/Windows there is no launchd integration — start the daemon in the
+   background yourself with `node REPO/dist/daemon/index.js` and tell me it
+   will not survive a reboot.
+   Verify: `curl -s http://127.0.0.1:8787/health` returns JSON.
+
+5. Register as an MCP server. The MCP entry point is always:
+     command: node
+     args:    ["REPO/dist/mcp/index.js"]
+   It talks to the daemon over http://127.0.0.1:8787 and does not start it, so
+   step 4 must be working first. If the daemon runs on another port, also set
+   the env var WEBHARVEST_URL for the server.
+
+   Do this for each agent that is actually installed on this machine — check
+   first, skip the rest, and never overwrite an existing "webharvest" entry
+   without telling me:
+
+   - Claude Code:  claude mcp add webharvest -- node REPO/dist/mcp/index.js
+   - Codex: add to ~/.codex/config.toml
+       [mcp_servers.webharvest]
+       command = "node"
+       args = ["REPO/dist/mcp/index.js"]
+   - Cursor (~/.cursor/mcp.json), Windsurf, Claude Desktop, and most others
+     use the same JSON shape — merge into the existing "mcpServers" object,
+     do not replace the file:
+       { "mcpServers": { "webharvest": {
+           "command": "node", "args": ["REPO/dist/mcp/index.js"] } } }
+   - Gemini CLI: same JSON shape in ~/.gemini/settings.json.
+
+   If an agent you find is not in this list, look up its MCP config location in
+   its own docs and use the same command/args.
+
+6. Verify end to end. For Claude Code run `claude mcp list` and confirm
+   webharvest is connected. For the others, tell me to restart the agent and
+   check that the tools `scrape` and `search` appear. If you yourself can reach
+   the new server, call `search` with the query "model context protocol" and
+   `scrape` on the first result URL, and show me the output.
+
+7. Report: what you installed, the exact paths and config files you touched,
+   what still needs a restart, and anything you skipped and why.
+````
+
 ### Common Commands
 
 - `webharvest start` — Start the daemon manually
