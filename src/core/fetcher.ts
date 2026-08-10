@@ -37,6 +37,34 @@ export interface FetcherDeps {
 const USER_AGENT = 'webharvest/0.1 (+personal research tool)';
 const MAX_REDIRECTS = 5;
 
+/** Разворачивает ошибку в строку, по которой можно понять, что произошло.
+ *  `e.message` одного верхнего уровня для этого не хватает: у AggregateError,
+ *  которым Node отдаёт неудачу Happy Eyeballs (все адреса хоста отказали),
+ *  message пустой, а настоящие ECONNRESET/ETIMEDOUT лежат в `errors`; undici
+ *  и fetch аналогично прячут причину в `cause`. Без разворачивания наверх
+ *  уходило "Не удалось загрузить <url>: " с пустым хвостом — сообщение,
+ *  по которому нельзя отличить обрыв соединения от отказа DNS. */
+export function describeError(e: unknown, depth = 0): string {
+  if (!(e instanceof Error)) return String(e);
+
+  const code = (e as { code?: unknown }).code;
+  const head = [e.name, typeof code === 'string' ? `(${code})` : '', e.message]
+    .filter(Boolean)
+    .join(' ');
+
+  // Глубина ограничена: цепочка cause бывает самоссылочной, а полезное
+  // обычно лежит в первых двух звеньях.
+  if (depth >= 3) return head;
+
+  const nested = e instanceof AggregateError && Array.isArray(e.errors)
+    ? e.errors.slice(0, 3).map((inner) => describeError(inner, depth + 1))
+    : e.cause !== undefined && e.cause !== null
+      ? [describeError(e.cause, depth + 1)]
+      : [];
+
+  return nested.length ? `${head} [${nested.join('; ')}]` : head;
+}
+
 export function createFetcher(deps: FetcherDeps) {
   const httpTimeoutMs = deps.httpTimeoutMs ?? 10_000;
   const browserTimeoutMs = deps.browserTimeoutMs ?? 30_000;
@@ -103,7 +131,7 @@ export function createFetcher(deps: FetcherDeps) {
         },
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = describeError(e);
       if (/timeout|UND_ERR_(HEADERS|BODY)_TIMEOUT/i.test(msg)) {
         throw new HarvestError('timeout', `Сервер не ответил за ${httpTimeoutMs} мс: ${url}`);
       }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { createFetcher, DomainHints } from '../../src/core/fetcher.js';
+import { createFetcher, DomainHints, describeError } from '../../src/core/fetcher.js';
 import { DomainQueue } from '../../src/core/politeness.js';
 import type { BrowserPool } from '../../src/core/browser.js';
 
@@ -41,6 +41,39 @@ const deps = (browser: BrowserPool, hints = new DomainHints()) => ({
 });
 
 const article = '<html><body><article><h1>Заголовок</h1><p>' + 'текст '.repeat(200) + '</p></article></body></html>';
+
+describe('describeError', () => {
+  it('достаёт причины из AggregateError с пустым message', () => {
+    const inner = Object.assign(new Error('connect ECONNRESET 209.216.230.240:443'), { code: 'ECONNRESET' });
+    const agg = new AggregateError([inner], '');
+
+    const s = describeError(agg);
+
+    expect(s).toContain('AggregateError');
+    expect(s).toContain('ECONNRESET');
+    expect(s).not.toMatch(/^AggregateError\s*$/);
+  });
+
+  it('разворачивает цепочку cause', () => {
+    const root = Object.assign(new Error('getaddrinfo ENOTFOUND example.invalid'), { code: 'ENOTFOUND' });
+    const wrapped = new TypeError('fetch failed', { cause: root });
+
+    expect(describeError(wrapped)).toBe(
+      'TypeError fetch failed [Error (ENOTFOUND) getaddrinfo ENOTFOUND example.invalid]',
+    );
+  });
+
+  it('не зацикливается на самоссылочной cause', () => {
+    const e = new Error('верхняя');
+    (e as { cause?: unknown }).cause = e;
+
+    expect(describeError(e)).toContain('верхняя');
+  });
+
+  it('переживает не-Error', () => {
+    expect(describeError('строка')).toBe('строка');
+  });
+});
 
 describe('createFetcher', () => {
   it('берёт обычную страницу по HTTP и не трогает браузер', async () => {
