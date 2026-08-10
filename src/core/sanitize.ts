@@ -137,10 +137,35 @@ function stripTrackingParams(doc: Document, baseUrl: string): void {
   }
 }
 
+/**
+ * Zero-width и прочая типографская невидимота: токены ест, поиск по тексту
+ * ломает. Внутри `pre` и `code` не трогаем — там такой символ может быть
+ * предметом обсуждения.
+ *
+ * Обход рекурсивный, а не через TreeWalker: `NodeFilter` живёт на window
+ * внутри jsdom, а в глобальной области Node.js его нет. По той же причине
+ * тип текстового узла сравнивается с литералом 3, а не с `Node.TEXT_NODE`.
+ */
+function stripInvisibleChars(doc: Document): void {
+  const walk = (node: Node): void => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === 3) {
+        child.nodeValue = (child.nodeValue ?? '').replace(INVISIBLE, '');
+        continue;
+      }
+      const el = child as Element;
+      if (el.tagName === 'PRE' || el.tagName === 'CODE') continue;
+      walk(child);
+    }
+  };
+  walk(doc.body ?? doc.documentElement);
+}
+
 export function sanitizeDocument(doc: Document, baseUrl: string): void {
   // Порядок важен: якорь `<a href="#x"><img alt=""></a>` опознаётся как пустой
   // только до того, как картинки превратятся в текст.
   stripPermalinks(doc, baseUrl);
   replaceImages(doc);
   stripTrackingParams(doc, baseUrl);
+  stripInvisibleChars(doc);
 }

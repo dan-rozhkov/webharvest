@@ -118,3 +118,21 @@ describe('sanitize: трекинговые параметры', () => {
     expect(html).toContain('href="https://example.org/doc#part"');
   });
 });
+
+describe('sanitize: невидимые символы', () => {
+  it('вычищает zero-width и soft hyphen из текста', () => {
+    const html = clean('<p>сло\u00ADvo\u200B и\u2060 ещё\uFEFF</p>');
+    expect(html).toContain('слоvo и ещё');
+    expect(html).not.toMatch(/[\u00AD\u200B\u2060\uFEFF]/);
+  });
+
+  it('не трогает невидимые символы внутри code и pre', () => {
+    const html = clean('<pre><code>const a = "\u200B";</code></pre>');
+    expect(html).toContain('\u200B');
+  });
+
+  it('не трогает невидимые символы в inline-коде', () => {
+    const html = clean('<p>смотри <code>a\u200Bb</code></p>');
+    expect(html).toContain('a\u200Bb');
+  });
+});
