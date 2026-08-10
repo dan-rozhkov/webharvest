@@ -41,3 +41,35 @@ describe('sanitize: картинки', () => {
     expect(html).not.toContain('cdn.example.com');
   });
 });
+
+describe('sanitize: permalink-якоря', () => {
+  it('убирает якорь-паразит у заголовка', () => {
+    const html = clean(
+      '<h2>Version 1.62<a href="#version-162" title="Direct link">\u200B</a></h2>',
+    );
+    expect(html).toContain('Version 1.62');
+    expect(html).not.toContain('#version-162');
+  });
+
+  it('убирает якорь из одного символа-пилькроу', () => {
+    const html = clean('<h2>Установка<a href="/page#install">¶</a></h2>');
+    expect(html).not.toContain('#install');
+    expect(html).not.toContain('¶');
+  });
+
+  it('оставляет якорь с содержательным текстом', () => {
+    const html = clean('<p><a href="#install">см. раздел Установка</a></p>');
+    expect(html).toContain('#install');
+    expect(html).toContain('см. раздел Установка');
+  });
+
+  it('оставляет ссылку на якорь другой страницы', () => {
+    const html = clean('<p><a href="https://other.example.com/doc#part">\u200B</a></p>');
+    expect(html).toContain('other.example.com/doc#part');
+  });
+
+  it('оставляет ссылку на ту же страницу без хеша', () => {
+    const html = clean('<p><a href="/page">та же страница</a></p>');
+    expect(html).toContain('href="/page"');
+  });
+});
