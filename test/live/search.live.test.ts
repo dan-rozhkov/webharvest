@@ -10,8 +10,11 @@ const titled = (name: string): string =>
   LIVE ? name : `${name} (skipped — run \`npm run test:live\` to execute)`;
 
 let service: ReturnType<typeof createService>;
+let config: ReturnType<typeof loadConfig> | null = null;
 beforeAll(() => {
-  if (LIVE) service = createService(loadConfig({ cachePath: ':memory:' }));
+  if (!LIVE) return;
+  config = loadConfig({ cachePath: ':memory:' });
+  service = createService(config);
 });
 afterAll(async () => {
   await service?.shutdown();
@@ -24,11 +27,14 @@ let skipReason = '';
 async function checkSearchAvailable(): Promise<boolean> {
   if (searchAvailable !== null) return searchAvailable;
 
-  const hasEnvKey = !!process.env.BRAVE_API_KEY;
-  const hasSearxng = process.env.WEBHARVEST_SEARXNG_URL !== 'null' && !!process.env.WEBHARVEST_SEARXNG_URL;
-
-  if (!hasEnvKey && !hasSearxng) {
-    skipReason = 'BRAVE_API_KEY not set and SearXNG not configured';
+  // Ask the same config the service was built from, not the environment:
+  // createService() enables SearXNG whenever config.searxngUrl is truthy, and
+  // that URL defaults to http://127.0.0.1:8080 (src/daemon/config.ts) or comes
+  // from ~/.webharvest/config.json. Reading process.env.WEBHARVEST_SEARXNG_URL
+  // directly saw none of that, so a working local SearXNG silently skipped the
+  // whole suite unless the operator also exported the variable by hand.
+  if (!config?.searxngUrl && !config?.braveApiKey) {
+    skipReason = 'ни SearXNG, ни BRAVE_API_KEY не сконфигурированы';
     searchAvailable = false;
     return false;
   }
