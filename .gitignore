@@ -9,3 +9,6 @@ searxng/settings.yml
 
 # Local design docs — not for the public repo.
 docs/superpowers/
+
+# SDD scratch: ledger, briefs, review packages. Не для репозитория.
+.superpowers/
