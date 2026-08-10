@@ -73,3 +73,32 @@ describe('sanitize: permalink-якоря', () => {
     expect(html).toContain('href="/page"');
   });
 });
+
+describe('sanitize: трекинговые параметры', () => {
+  it('вычищает utm и подобное, сохраняя значимые параметры', () => {
+    const html = clean(
+      '<a href="https://shop.example.com/item?id=7&utm_source=news&utm_medium=email&fbclid=abc">товар</a>',
+    );
+    expect(html).toContain('id=7');
+    expect(html).not.toContain('utm_source');
+    expect(html).not.toContain('utm_medium');
+    expect(html).not.toContain('fbclid');
+  });
+
+  it('убирает знак вопроса, если значимых параметров не осталось', () => {
+    const html = clean('<a href="https://example.org/post?utm_source=news">пост</a>');
+    expect(html).toContain('href="https://example.org/post"');
+    expect(html).not.toContain('?');
+  });
+
+  it('не трогает ref и прочие неоднозначные параметры', () => {
+    const html = clean('<a href="https://example.org/p?ref=hn&gclid=x">пост</a>');
+    expect(html).toContain('ref=hn');
+    expect(html).not.toContain('gclid');
+  });
+
+  it('не ломает ссылку без параметров', () => {
+    const html = clean('<a href="https://example.org/plain">пост</a>');
+    expect(html).toContain('href="https://example.org/plain"');
+  });
+});

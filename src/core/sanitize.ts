@@ -68,9 +68,52 @@ function stripPermalinks(doc: Document, baseUrl: string): void {
   }
 }
 
+/**
+ * Закрытый список: только параметры, которые заведомо ничего не значат для
+ * содержимого. `ref`, `source` и подобные не трогаем — на форумах и в
+ * документации они бывают значимыми, а сломанная ссылка хуже длинной.
+ */
+const TRACKING_PARAMS = new Set([
+  'fbclid',
+  'gclid',
+  'msclkid',
+  'yclid',
+  'mc_cid',
+  'mc_eid',
+  'igshid',
+]);
+
+function isTracking(name: string): boolean {
+  return name.startsWith('utm_') || TRACKING_PARAMS.has(name);
+}
+
+/** Хвосты рекламных кампаний в ссылках: место занимают, смысла не несут. */
+function stripTrackingParams(doc: Document, baseUrl: string): void {
+  for (const a of Array.from(doc.querySelectorAll('a[href]'))) {
+    const raw = a.getAttribute('href');
+    if (!raw || !raw.includes('?')) continue;
+    let url: URL;
+    try {
+      url = new URL(raw, baseUrl);
+    } catch {
+      continue;
+    }
+    let touched = false;
+    for (const name of Array.from(url.searchParams.keys())) {
+      if (!isTracking(name)) continue;
+      url.searchParams.delete(name);
+      touched = true;
+    }
+    if (!touched) continue;
+    // URL оставляет висеть `?` после удаления последнего параметра.
+    a.setAttribute('href', url.search === '' ? url.href.replace(/\?$/, '') : url.href);
+  }
+}
+
 export function sanitizeDocument(doc: Document, baseUrl: string): void {
   // Порядок важен: якорь `<a href="#x"><img alt=""></a>` опознаётся как пустой
   // только до того, как картинки превратятся в текст.
   stripPermalinks(doc, baseUrl);
   replaceImages(doc);
+  stripTrackingParams(doc, baseUrl);
 }
