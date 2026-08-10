@@ -161,13 +161,24 @@ describe('extract: свойства', () => {
     expect(markdown + JSON.stringify(links)).not.toContain('utm_source');
   });
 
-  it('страница из одних бейджей не набирает текста на порог полезности', () => {
+  it('короткие бейджи не дотягивают до порога полезности', () => {
     const badges = Array.from(
       { length: 6 },
       (_, i) => `<a href="https://x.example/${i}"><img src="https://camo.example/${i}" alt="Badge ${i}"></a>`,
     ).join('');
     const { textLength } = extract(`<html><body><div>${badges}</div></body></html>`, 'https://example.com/');
     expect(textLength).toBeLessThan(200);
+  });
+
+  it('длинные alt считаются как текст: раньше их не было видно вовсе', () => {
+    const alt = 'Подробная подпись к диаграмме архитектуры сервиса, объясняющая поток данных';
+    const imgs = Array.from(
+      { length: 4 },
+      (_, i) => `<img src="https://camo.example/${i}" alt="${alt} ${i}">`,
+    ).join('');
+    const { markdown, textLength } = extract(`<html><body><div>${imgs}</div></body></html>`, 'https://example.com/');
+    expect(markdown).not.toContain('camo.example');
+    expect(textLength).toBeGreaterThan(200);
   });
 
   it('на фикстуре github-repo убирает camo-адреса из markdown', () => {
