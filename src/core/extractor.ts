@@ -3,6 +3,7 @@ import { Readability } from '@mozilla/readability';
 import DefuddleExport from 'defuddle';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
+import { sanitizeDocument } from './sanitize.js';
 
 export interface ExtractedLink {
   href: string;
@@ -375,6 +376,8 @@ export function extract(html: string, url: string): Extracted {
 
   const effectiveBase = resolveBase(doc, url);
   absolutize(doc, effectiveBase);
+  // До collectLinks: тогда чистыми выходят и markdown, и список ссылок.
+  sanitizeDocument(doc, effectiveBase);
   const links = collectLinks(doc, effectiveBase);
   for (const sel of CODE_CHROME_SELECTORS) {
     for (const dead of Array.from(doc.querySelectorAll(sel))) dead.remove();

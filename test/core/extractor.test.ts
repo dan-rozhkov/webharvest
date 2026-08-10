@@ -132,4 +132,46 @@ describe('extract: свойства', () => {
     );
     expect(md.textLength).toBeGreaterThan(500);
   });
+
+  it('не тащит в markdown адреса картинок, но сохраняет alt', () => {
+    const html =
+      '<html><body><article><p>текст страницы для объёма</p>' +
+      '<img src="https://camo.githubusercontent.com/59c4ae90" alt="Organization">' +
+      '</article></body></html>';
+    const md = extract(html, 'https://example.com/').markdown;
+    expect(md).toContain('изображение: Organization');
+    expect(md).not.toContain('camo.githubusercontent.com');
+  });
+
+  it('не трогает пример картинки внутри блока кода', () => {
+    const html =
+      '<html><body><article><p>текст страницы для объёма</p>' +
+      '<pre><code>![alt](https://cdn.example.com/a.png)</code></pre></article></body></html>';
+    const md = extract(html, 'https://example.com/').markdown;
+    expect(md).toContain('![alt](https://cdn.example.com/a.png)');
+  });
+
+  it('чистит трекинговые хвосты и в markdown, и в списке ссылок', () => {
+    const html =
+      '<html><body><article><p>текст страницы для объёма</p>' +
+      '<a href="https://shop.example.com/item?id=7&utm_source=news">товар</a>' +
+      '</article></body></html>';
+    const { markdown, links } = extract(html, 'https://example.com/');
+    expect(markdown).toContain('id=7');
+    expect(markdown + JSON.stringify(links)).not.toContain('utm_source');
+  });
+
+  it('страница из одних бейджей не набирает текста на порог полезности', () => {
+    const badges = Array.from(
+      { length: 6 },
+      (_, i) => `<a href="https://x.example/${i}"><img src="https://camo.example/${i}" alt="Badge ${i}"></a>`,
+    ).join('');
+    const { textLength } = extract(`<html><body><div>${badges}</div></body></html>`, 'https://example.com/');
+    expect(textLength).toBeLessThan(200);
+  });
+
+  it('на фикстуре github-repo убирает camo-адреса из markdown', () => {
+    const md = extract(load('github-repo'), 'https://github.com/searxng/searxng').markdown;
+    expect(md).not.toContain('camo.githubusercontent.com');
+  });
 });
