@@ -8,12 +8,23 @@ import {
   buildExtractSystemPrompt,
   buildExtractUserPrompt,
 } from '../../../src/core/llm/prompts.js';
+import { SUPPORTED_ACTIONS } from '../../../src/core/actions.js';
+
+// Действия, которые план сознательно не включил в v1 — промпты не должны их обещать модели.
+const EXCLUDED_ACTIONS = ['nextChunk', 'prevChunk', 'dragAndDrop', 'doubleClick'];
+
+function expectExactActionSet(prompt: string): void {
+  for (const action of SUPPORTED_ACTIONS) {
+    expect(prompt).toContain(action);
+  }
+  for (const action of EXCLUDED_ACTIONS) {
+    expect(prompt).not.toContain(action);
+  }
+}
 
 describe('llm/prompts: observe', () => {
-  it('перечисляет поддерживаемые действия', () => {
-    const p = buildObserveSystemPrompt();
-    expect(p).toContain('click');
-    expect(p).toContain('selectOptionFromDropdown');
+  it('перечисляет ровно набор действий из SUPPORTED_ACTIONS, не больше и не меньше', () => {
+    expectExactActionSet(buildObserveSystemPrompt());
   });
 
   it('требует копировать адрес целиком, включая ординал фрейма', () => {
@@ -52,11 +63,18 @@ describe('llm/prompts: act', () => {
     expect(p).toMatch(/do not fabricate/i);
   });
 
+  it('перечисляет ровно набор действий из SUPPORTED_ACTIONS в первом шаге act', () => {
+    expectExactActionSet(buildActUserPrompt('выбери страну в дропдауне', '[0-1] select'));
+  });
+
   it('описывает оба случая дропдауна', () => {
     const p = buildActUserPrompt('выбери страну в дропдауне', '[0-1] select');
     expect(p).toContain('selectOptionFromDropdown');
     expect(p).toMatch(/twoStep to false/);
     expect(p).toMatch(/twoStep to true/);
+    // CASE 1 — нативный select-элемент, CASE 2 — не select (кастомный виджет).
+    expect(p).toMatch(/is a 'select' element/);
+    expect(p).toMatch(/is NOT a 'select' element/);
   });
 
   it('на втором шаге сообщает, что уже сделано', () => {
@@ -64,6 +82,12 @@ describe('llm/prompts: act', () => {
     expect(p).toContain('выбери страну');
     expect(p).toContain('clicked the country dropdown');
     expect(p).toContain('[0-2] option: Кипр');
+  });
+
+  it('перечисляет ровно набор действий из SUPPORTED_ACTIONS на втором шаге act', () => {
+    expectExactActionSet(
+      buildActStepTwoUserPrompt('выбери страну', 'clicked the country dropdown', '[0-2] option: Кипр'),
+    );
   });
 
   it('передаёт имена переменных, не значения', () => {
