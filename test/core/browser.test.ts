@@ -166,6 +166,8 @@ describe('BrowserPool', () => {
           webdriver: navigator.webdriver === true,
           languages: navigator.languages.length,
           plugins: navigator.plugins.length,
+          maxTouchPoints: navigator.maxTouchPoints,
+          vendor: navigator.vendor,
           headlessUA: /HeadlessChrome/.test(navigator.userAgent)
         });
       </script></body></html>`,
@@ -177,6 +179,12 @@ describe('BrowserPool', () => {
     expect(probe.headlessUA).toBe(false);
     expect(probe.languages).toBeGreaterThan(0);
     expect(probe.plugins).toBeGreaterThan(0);
+    // maxTouchPoints форсится в 0 через STEALTH_INIT — headless-хром на
+    // десктопе и так отдаёт 0, но явный getter защищает от изменения
+    // дефолтов. vendor у headless chromium обычно уже 'Google Inc.', но
+    // проверка держит его на виду, если движок когда-нибудь изменится.
+    expect(probe.maxTouchPoints).toBe(0);
+    expect(probe.vendor).toBe('Google Inc.');
   });
 
   it('ограничивает число одновременных рендеров maxConcurrent', async () => {

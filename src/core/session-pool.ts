@@ -8,6 +8,7 @@
  */
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { HarvestError } from './errors.js';
+import { applyStealth, STEALTH_ARGS, STEALTH_UA } from './stealth.js';
 
 export interface BrowserSession {
   id: string;
@@ -59,10 +60,6 @@ export interface SessionPool {
   shutdown(): Promise<void>;
   count(): number;
 }
-
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
 
 let counter = 0;
 function nextId(): string {
@@ -132,14 +129,19 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
     launching = (async () => {
       const b = await chromium.launch({
         headless,
-        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
+        args: STEALTH_ARGS,
       });
       try {
         const c = await b.newContext({
-          userAgent: UA,
+          userAgent: STEALTH_UA,
           viewport: { width: 1440, height: 900 },
           locale: 'en-US',
         });
+        // Stealth применяется сразу после успешного newContext — до присвоения
+        // context/browser, чтобы init-скрипт гарантированно висел в контексте,
+        // как только тот становится доступен пулу (и при сбое закрытие `b` в
+        // catch ниже осталось единственным путём наружу).
+        await applyStealth(c);
         browser = b;
         context = c;
         return c;

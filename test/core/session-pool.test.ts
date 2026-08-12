@@ -15,6 +15,7 @@ const fakePage = () => ({
 const fakeContext = () => ({
   newPage: vi.fn(async () => fakePage()),
   close: vi.fn(async () => {}),
+  addInitScript: vi.fn(async () => {}),
 });
 
 const fakeBrowser = () => ({
@@ -193,5 +194,23 @@ describe('createSessionPool: ensureContext закрывает Chromium, если
     const s = await pool.open('http://example.test/');
     expect(s.id).toMatch(/^s_/);
     expect(chromium.launch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createSessionPool: stealth применяется к каждому новому контексту', () => {
+  it('вызывает addInitScript при открытии сессии (applyStealth из stealth.js)', async () => {
+    // Раньше усиленный init-скрипт жил только в browser.ts — сессии browser use
+    // открывались без него и светились перед Turnstile. Теперь оба пула зовут
+    // applyStealth() из общего модуля, и здесь мы проверяем, что session-pool
+    // действительно прокидывает скрипт в контекст, который вернул newContext.
+    // БЕЗ fake timers (в отличие от тестов выше): этот тест не продвигает
+    // время, а только проверяет оркестрацию, и реальные таймеры тут безопасны.
+    vi.mocked(chromium.launch).mockClear();
+    pool = createSessionPool();
+    const s = await pool.open('http://example.test/');
+    expect(s.id).toMatch(/^s_/);
+    const ctx = await vi.mocked(chromium.launch).mock.results[0]!.value;
+    const context = await (ctx as { newContext: ReturnType<typeof vi.fn> }).newContext.mock.results[0]!.value;
+    expect((context as { addInitScript: ReturnType<typeof vi.fn> }).addInitScript).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { HarvestError } from './errors.js';
+import { applyStealth, STEALTH_ARGS, STEALTH_UA } from './stealth.js';
 
 export interface RenderResult {
   html: string;
@@ -22,24 +23,6 @@ export interface BrowserPoolOptions {
    *  tens of MB through jsdom/Readability/Defuddle and into SQLite. */
   maxBytes?: number;
 }
-
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36';
-
-const STEALTH_INIT = `
-  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'ru'] });
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3].map((i) => ({ name: 'Chrome PDF Plugin ' + i })),
-  });
-  window.chrome = window.chrome || { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
-  const origQuery = window.navigator.permissions.query;
-  window.navigator.permissions.query = (p) =>
-    p.name === 'notifications'
-      ? Promise.resolve({ state: Notification.permission })
-      : origQuery(p);
-`;
 
 const CLOSED_MESSAGE = 'Пул браузеров остановлен, рендер отклонён';
 
@@ -105,17 +88,17 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     launching = (async () => {
       const b = await chromium.launch({
         headless,
-        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
+        args: STEALTH_ARGS,
       });
       const c = await b.newContext({
-        userAgent: UA,
+        userAgent: STEALTH_UA,
         viewport: { width: 1440, height: 900 },
         locale: 'en-US',
         timezoneId: 'Europe/Nicosia',
         deviceScaleFactor: 2,
         extraHTTPHeaders: { 'accept-language': 'en-US,en;q=0.9,ru;q=0.8' },
       });
-      await c.addInitScript(STEALTH_INIT);
+      await applyStealth(c);
       browser = b;
       context = c;
       generation += 1;
