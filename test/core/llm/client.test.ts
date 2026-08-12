@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
+import Anthropic from '@anthropic-ai/sdk';
 import { createLlmClient, type AnthropicLike } from '../../../src/core/llm/client.js';
 import { HarvestError } from '../../../src/core/errors.js';
 
@@ -70,5 +71,63 @@ describe('llm/client: generateStructured', () => {
   it('заворачивает ошибку API в HarvestError', async () => {
     const anthropic = fakeAnthropic(new Error('rate limited'));
     await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toThrow(HarvestError);
+  });
+
+  it('отказ модели (stop_reason: refusal) заворачивается в HarvestError с кодом blocked', async () => {
+    const anthropic = fakeAnthropic({
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      stop_reason: 'refusal',
+    });
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'blocked',
+    });
+  });
+
+  it('обрезанный ответ (stop_reason: max_tokens) заворачивается в HarvestError с кодом internal', async () => {
+    const anthropic = fakeAnthropic({
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      stop_reason: 'max_tokens',
+    });
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'internal',
+    });
+  });
+
+  it('таймаут соединения (APIConnectionTimeoutError) маппится в код timeout', async () => {
+    const anthropic = fakeAnthropic(new Anthropic.APIConnectionTimeoutError());
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'timeout',
+    });
+  });
+
+  it('превышение лимита запросов (RateLimitError, 429) маппится в код upstream_error', async () => {
+    // API реально ответил (соединение состоялось), просто с ошибочным статусом —
+    // это upstream_error, а не network.
+    const anthropic = fakeAnthropic(
+      new Anthropic.RateLimitError(429, { type: 'rate_limit_error' }, 'rate limited', new Headers()),
+    );
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'upstream_error',
+    });
+  });
+
+  it('некорректный запрос (BadRequestError, 400) маппится в код invalid_request', async () => {
+    const anthropic = fakeAnthropic(
+      new Anthropic.BadRequestError(400, { type: 'invalid_request_error' }, 'bad request', new Headers()),
+    );
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+  });
+
+  it('прочая ошибка API (общий APIError) маппится в код upstream_error', async () => {
+    // Инстанс базового класса напрямую — стенд-ин для любого статуса API,
+    // не покрытого более узкими подклассами (5xx и т.п.).
+    const anthropic = fakeAnthropic(
+      new Anthropic.APIError(503, { type: 'overloaded_error' }, 'service unavailable', new Headers()),
+    );
+    await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
+      code: 'upstream_error',
+    });
   });
 });

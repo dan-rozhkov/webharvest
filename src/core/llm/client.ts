@@ -54,7 +54,9 @@ function wrapApiError(e: unknown, name: string): HarvestError {
     return new HarvestError('timeout', `Модель не ответила вовремя на запрос ${name}`);
   }
   if (e instanceof Anthropic.RateLimitError) {
-    return new HarvestError('network', `Превышен лимит запросов к модели на запрос ${name}`, {
+    // Реальный HTTP-ответ с ошибочным статусом (429) — это `upstream_error`,
+    // а не `network`: соединение состоялось, отказал сам сервис API.
+    return new HarvestError('upstream_error', `Превышен лимит запросов к модели на запрос ${name}`, {
       status: e.status,
     });
   }
@@ -64,10 +66,15 @@ function wrapApiError(e: unknown, name: string): HarvestError {
     });
   }
   if (e instanceof Anthropic.APIError) {
-    return new HarvestError('network', `Ошибка API модели на запрос ${name}: ${e.message}`, {
+    // Тот же случай: API ответил, просто с другим кодом ошибки (5xx и т.п.).
+    return new HarvestError('upstream_error', `Ошибка API модели на запрос ${name}: ${e.message}`, {
       status: e.status,
     });
   }
+  // Всё, что не является типизированной ошибкой SDK, — это неизвестный сбой
+  // соединения (DNS, ECONNREFUSED и т.п.); стрингифицируем как есть. Если
+  // будущая версия SDK начнёт бросать что-то с полезными метаданными вместо
+  // Error, здесь стоит это учесть отдельной веткой, а не полагаться на String().
   const msg = e instanceof Error ? e.message : String(e);
   return new HarvestError('network', `Модель не ответила на запрос ${name}: ${msg}`);
 }
