@@ -89,7 +89,13 @@ async function hydrate(session: CdpSender, root: DomNode): Promise<void> {
 
   while (stack.length) {
     const node = stack.pop()!;
-    const key = node.nodeId !== undefined ? `n:${node.nodeId}` : node.backendNodeId !== undefined ? `b:${node.backendNodeId}` : undefined;
+    // Та же precedence, что у `base` ниже: `DOM.describeNode` не пушит узлы
+    // во фронтенд (это делает `pushNodesByBackendIdsToFrontend`), поэтому на
+    // CBOR-фоллбэке возвращает детей с nodeId: 0 — "нет живого nodeId", а не
+    // настоящий идентификатор нулевого узла. Ключ по `!== undefined` считал
+    // бы такой узел адресуемым и схлопывал всех детей с nodeId:0 в один и тот
+    // же ключ `n:0`, теряя все их поддеревья кроме первого.
+    const key = node.nodeId ? `n:${node.nodeId}` : node.backendNodeId !== undefined ? `b:${node.backendNodeId}` : undefined;
     if (key !== undefined) {
       if (seen.has(key)) continue;
       seen.add(key);

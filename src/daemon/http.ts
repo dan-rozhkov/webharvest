@@ -20,6 +20,9 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   invalid_request: 400,
   not_found: 404,
   internal: 500,
+  // Как и blocked — запрос не выполнен не по вине клиента и не по вине
+  // демона, а по решению модели; тот же статус-класс, отдельный код.
+  llm_refusal: 422,
 };
 
 const scrapeSchema = z.object({

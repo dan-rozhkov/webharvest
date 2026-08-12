@@ -1,7 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { planAct, planActStepTwo, substituteVariables } from '../../src/core/inference.js';
+import { parseActResult } from '../../src/core/llm/schemas.js';
 import type { LlmClient } from '../../src/core/llm/client.js';
 import type { A11ySnapshot } from '../../src/core/a11y/types.js';
+
+describe('llm/schemas: act', () => {
+  it('невалидный элемент в action превращается в null, а не в исключение', () => {
+    const r = parseActResult({
+      action: { elementId: '18372', description: 'd', method: 'click', arguments: [] },
+      twoStep: false,
+    });
+    expect(r).toEqual({ action: null, twoStep: false });
+  });
+
+  it('action: null проходит как есть', () => {
+    expect(parseActResult({ action: null, twoStep: true })).toEqual({ action: null, twoStep: true });
+  });
+});
 
 const SNAPSHOT: A11ySnapshot = {
   outline: '[0-1] select: Страна\n[0-2] textbox: Пароль\n[0-3] StaticText: Выберите город',

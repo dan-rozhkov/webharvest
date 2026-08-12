@@ -18,7 +18,12 @@ import { HarvestError } from '../errors.js';
 export type JsonSchema = Record<string, unknown>;
 
 export interface StructuredRequest {
-  /** Имя схемы — попадает в запрос и в кэш скомпилированных схем на стороне API. */
+  /**
+   * Внутренняя метка схемы — используется только в наших сообщениях об
+   * ошибках. `output_config.format` у Messages API не принимает `name`
+   * (см. `JSONOutputFormat` в SDK: только `type` и `schema`), поэтому в
+   * запрос это поле не уходит вовсе — только `schema` и `type`.
+   */
   name: string;
   systemPrompt: string;
   userPrompt: string;
@@ -26,10 +31,28 @@ export interface StructuredRequest {
   effort?: 'low' | 'medium' | 'high';
 }
 
+/**
+ * Точная форма тела запроса, которое реально уходит в SDK. Так как ниже мы
+ * всегда вызываем `create` с литералом объекта, excess-property checking
+ * TypeScript ловит на компиляции любое лишнее поле (например, случайно
+ * добавленный `name` внутрь `format`) — это и есть барьер, которого не было
+ * у прежнего `Record<string, unknown>`.
+ */
+export interface StructuredCreateParams {
+  model: string;
+  max_tokens: number;
+  system: string;
+  messages: Array<{ role: 'user'; content: string }>;
+  output_config: {
+    effort: 'low' | 'medium' | 'high';
+    format: { type: 'json_schema'; schema: JsonSchema };
+  };
+}
+
 /** Минимум от SDK, который нам нужен. Позволяет тестировать без сети и ключа. */
 export interface AnthropicLike {
   messages: {
-    create(params: Record<string, unknown>): Promise<{
+    create(params: StructuredCreateParams): Promise<{
       content: Array<{ type: string; text?: string }>;
       stop_reason?: string | null;
     }>;
@@ -97,7 +120,10 @@ export function createLlmClient(deps: { anthropic?: AnthropicLike } = {}): LlmCl
           // `thinking` намеренно не передаём — ручная конфигурация 400-ит.
           output_config: {
             effort: req.effort ?? 'low',
-            format: { type: 'json_schema', name: req.name, schema: req.schema },
+            // `name` сюда не входит намеренно: `output_config.format` — это
+            // `JSONOutputFormat` из SDK, там только `type` и `schema`; лишнее
+            // поле API отвергает как invalid_request_error на каждом вызове.
+            format: { type: 'json_schema', schema: req.schema },
           },
         });
       } catch (e) {
@@ -105,7 +131,7 @@ export function createLlmClient(deps: { anthropic?: AnthropicLike } = {}): LlmCl
       }
 
       if (response.stop_reason === 'refusal') {
-        throw new HarvestError('blocked', `Модель отказалась выполнить запрос ${req.name}`);
+        throw new HarvestError('llm_refusal', `Модель отказалась выполнить запрос ${req.name}`);
       }
       if (response.stop_reason === 'max_tokens') {
         throw new HarvestError(

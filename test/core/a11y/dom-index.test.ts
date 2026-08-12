@@ -123,6 +123,56 @@ describe('a11y/dom-index: getDomTreeWithFallback', () => {
     const span = root.children?.find((c) => c.nodeName === 'SPAN');
     expect(span?.children?.[0]?.nodeName).toBe('A');
   });
+
+  it('не схлопывает нескольких детей с nodeId:0 после describeNode в один ключ дедупликации', async () => {
+    // DOM.describeNode не пушит дочерние узлы во фронтенд, поэтому все три
+    // ребёнка приходят с nodeId: 0 — различаются только backendNodeId. Раньше
+    // ключ дедупликации брал `nodeId !== undefined`, и все трое схлопывались
+    // в один и тот же ключ "n:0": обрабатывался только первый, остальные два
+    // молча пропускались вместе со всем их поддеревом.
+    const session = fakeSession((method, params) => {
+      if (method === 'DOM.getDocument') {
+        if (params.depth === -1) return new Error('CBOR: stack limit exceeded');
+        return {
+          root: { nodeName: '#document', nodeId: 1, backendNodeId: 1, childNodeCount: 1, children: [] },
+        };
+      }
+      if (method === 'DOM.describeNode') {
+        if (params.nodeId === 1) {
+          return {
+            node: {
+              nodeName: '#document',
+              nodeId: 1,
+              backendNodeId: 1,
+              childNodeCount: 3,
+              children: [
+                { nodeName: 'A', nodeId: 0, backendNodeId: 10, childNodeCount: 1, children: [] },
+                { nodeName: 'A', nodeId: 0, backendNodeId: 11, childNodeCount: 1, children: [] },
+                { nodeName: 'A', nodeId: 0, backendNodeId: 12, childNodeCount: 1, children: [] },
+              ],
+            },
+          };
+        }
+        if (params.backendNodeId === 10) {
+          return { node: { nodeName: 'A', nodeId: 0, backendNodeId: 10, childNodeCount: 1, children: [{ nodeName: 'SPAN', backendNodeId: 100 }] } };
+        }
+        if (params.backendNodeId === 11) {
+          return { node: { nodeName: 'A', nodeId: 0, backendNodeId: 11, childNodeCount: 1, children: [{ nodeName: 'SPAN', backendNodeId: 101 }] } };
+        }
+        if (params.backendNodeId === 12) {
+          return { node: { nodeName: 'A', nodeId: 0, backendNodeId: 12, childNodeCount: 1, children: [{ nodeName: 'SPAN', backendNodeId: 102 }] } };
+        }
+        throw new Error(`неожиданный describeNode для ${JSON.stringify(params)}`);
+      }
+      throw new Error(`неожиданный вызов ${method}`);
+    });
+
+    const root = await getDomTreeWithFallback(session);
+    const kids = root.children ?? [];
+    expect(kids).toHaveLength(3);
+    // Все три ветки должны быть дособраны, а не только первая попавшаяся.
+    expect(kids.map((k) => k.children?.[0]?.nodeName)).toEqual(['SPAN', 'SPAN', 'SPAN']);
+  });
 });
 
 describe('a11y/dom-index: buildDomMaps', () => {

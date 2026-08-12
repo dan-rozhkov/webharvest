@@ -131,6 +131,16 @@ export async function assertUrlIsSafe(url: string, allowPrivate: boolean): Promi
  * это можно было проверить юнит-тестом на фейковой странице/сессии, не
  * поднимая настоящий браузер: единственная реальная зависимость —
  * `session.page.url()` и функция закрытия.
+ *
+ * Закрывать сессию можно только на фактическое нарушение политики
+ * (`invalid_url` — приватный/внутренний адрес или синтаксически неверный
+ * url), а не на любой throw. `assertPublicHost` внутри `assertUrlIsSafe`
+ * бросает `network`, когда DNS-резолв просто не удался (сбой резолвера,
+ * кратковременная недоступность сети) — это не значит, что страница
+ * небезопасна, значит лишь, что прямо сейчас нельзя проверить. Закрывать
+ * живую, уже аутентифицированную сессию (а с ней — все её cookies) на
+ * временный сбой резолвера было бы явно непропорциональной реакцией:
+ * ошибка должна дойти до вызывающего, но сессия должна пережить её.
  */
 export async function assertSessionUrlSafePure(
   session: { id: string; page: { url(): string } },
@@ -140,7 +150,9 @@ export async function assertSessionUrlSafePure(
   try {
     await assertUrlIsSafe(session.page.url(), allowPrivate);
   } catch (e) {
-    await close(session.id);
+    if (HarvestError.is(e) && e.code === 'invalid_url') {
+      await close(session.id);
+    }
     throw e;
   }
 }

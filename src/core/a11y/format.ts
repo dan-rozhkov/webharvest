@@ -71,14 +71,36 @@ function formatStateFlags(node: A11yNode): string {
 }
 
 /**
- * Одна строка на узел: `[адрес] роль: имя [флаги]`, дети с отступом в два
- * пробела за уровень. Ссылка в строку не попадает — она лежит в `urlMap`,
- * иначе модель начинает выдумывать URL вместо того, чтобы вернуть ID.
+ * После успешного `type`/`fill` до этой правки outline не менялся вовсе —
+ * `value` из AX-дерева нигде не печатался, поэтому diffOutlines() был пуст и
+ * агент читал заполнение поля как "ничего не произошло" и повторял его,
+ * задваивая текст. Пароль — исключение: замаскированное значение печатаем
+ * фиксированной длины, не зависящей от реального ввода, потому что outline
+ * уходит прямо в контекст модели, а секрет там появляться не должен даже
+ * частично (в т.ч. через саму длину строки).
  */
-export function formatTreeLine(node: A11yNode, level = 0): string {
+function formatValue(node: A11yNode, tagNameMap: Record<string, string>): string {
+  if (!node.value) return '';
+  const isPassword = node.encodedId !== undefined && tagNameMap[node.encodedId] === 'input, password';
+  return isPassword ? ' = ••••' : ` = ${cleanText(node.value)}`;
+}
+
+/**
+ * Одна строка на узел: `[адрес] роль: имя [флаги] = значение`, дети с
+ * отступом в два пробела за уровень. Ссылка в строку не попадает — она
+ * лежит в `urlMap`, иначе модель начинает выдумывать URL вместо того, чтобы
+ * вернуть ID. `tagNameMap` нужен только для того, чтобы отличить пароль от
+ * остальных полей и замаскировать его значение — необязателен, потому что
+ * узлов без значения (подавляющее большинство) это не касается вовсе.
+ */
+export function formatTreeLine(
+  node: A11yNode,
+  level = 0,
+  tagNameMap: Record<string, string> = {},
+): string {
   const indent = '  '.repeat(level);
   const labelId = node.encodedId ?? node.nodeId;
-  const label = `[${labelId}] ${node.role}${node.name ? `: ${cleanText(node.name)}` : ''}${formatStateFlags(node)}`;
-  const kids = node.children?.map((c) => formatTreeLine(c, level + 1)).join('\n') ?? '';
+  const label = `[${labelId}] ${node.role}${node.name ? `: ${cleanText(node.name)}` : ''}${formatStateFlags(node)}${formatValue(node, tagNameMap)}`;
+  const kids = node.children?.map((c) => formatTreeLine(c, level + 1, tagNameMap)).join('\n') ?? '';
   return kids ? `${indent}${label}\n${kids}` : `${indent}${label}`;
 }

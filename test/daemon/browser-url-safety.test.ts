@@ -2,6 +2,19 @@ import { describe, it, expect, vi } from 'vitest';
 import { assertUrlIsSafe, assertSessionUrlSafePure } from '../../src/daemon/service.js';
 import { HarvestError } from '../../src/core/errors.js';
 
+// Мокаем DNS-резолв, чтобы без реальной сети смоделировать транзиентный сбой
+// резолвера (а не политику безопасности) — единственный способ получить код
+// `network` из assertPublicHost() детерминированно в юнит-тесте. Не задет ни
+// один тест выше/ниже с IP-литералами: для них isIP()/isPrivateAddress() —
+// синхронная ветка, `lookup()` вообще не вызывается.
+vi.mock('node:dns/promises', () => ({
+  lookup: vi.fn(async () => {
+    throw new Error('ENOTFOUND: имя не резолвится (смоделированный сбой резолвера)');
+  }),
+}));
+
+const UNRESOLVABLE_URL = 'http://this-host-name-does-not-resolve.example/';
+
 // Специально IP-литералы, а не имена хостов: assertPublicHost() резолвит
 // имя через настоящий DNS (node:dns/promises), а для IP-литерала уходит по
 // синхронной ветке isIP()/isPrivateAddress() и в сеть не лезет вовсе. Юнит-
@@ -57,6 +70,17 @@ describe('assertSessionUrlSafePure: пост-навигационная пров
     const session = fakeSession(PRIVATE_URL);
 
     await expect(assertSessionUrlSafePure(session, true, close)).resolves.toBeUndefined();
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it('транзиентный сбой DNS-резолвера (код network) не закрывает сессию, но ошибка доходит до вызывающего', async () => {
+    // Это не нарушение политики — это "прямо сейчас не смогли проверить".
+    // Агент несколько шагов внутри аутентифицированной сессии не должен
+    // терять страницу и её cookies из-за кратковременной недоступности DNS.
+    const close = vi.fn(async () => {});
+    const session = fakeSession(UNRESOLVABLE_URL);
+
+    await expect(assertSessionUrlSafePure(session, false, close)).rejects.toMatchObject({ code: 'network' });
     expect(close).not.toHaveBeenCalled();
   });
 });

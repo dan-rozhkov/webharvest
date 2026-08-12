@@ -23,14 +23,32 @@ function fakeLlm(reply: unknown): LlmClient & { lastPrompt?: string } {
 }
 
 describe('llm/schemas: observation', () => {
-  it('требует адрес с ординалом фрейма', () => {
-    expect(() => parseObservation({ elements: [{ elementId: '18372', description: 'd', method: 'click', arguments: [] }] }))
-      .toThrow();
+  it('отбрасывает адрес без ординала фрейма, не проваливая весь ответ', () => {
+    const r = parseObservation({ elements: [{ elementId: '18372', description: 'd', method: 'click', arguments: [] }] });
+    expect(r.elements).toEqual([]);
   });
 
-  it('отвергает неподдерживаемый метод', () => {
-    expect(() => parseObservation({ elements: [{ elementId: '0-1', description: 'd', method: 'dragAndDrop', arguments: [] }] }))
-      .toThrow();
+  it('отбрасывает элемент с неподдерживаемым методом, не проваливая весь ответ', () => {
+    const r = parseObservation({ elements: [{ elementId: '0-1', description: 'd', method: 'dragAndDrop', arguments: [] }] });
+    expect(r.elements).toEqual([]);
+  });
+
+  it('один невалидный элемент рядом с валидными не топит весь ответ — по-русски: один плохой id не должен выкидывать хорошие', () => {
+    const r = parseObservation({
+      elements: [
+        { elementId: '18372', description: 'выдуманный AX id без ординала фрейма', method: 'click', arguments: [] },
+        { elementId: '0-1', description: 'кнопка входа', method: 'click', arguments: [] },
+        { elementId: '0-2', description: 'ссылка помощи', method: 'click', arguments: [] },
+      ],
+    });
+    expect(r.elements).toEqual([
+      { elementId: '0-1', description: 'кнопка входа', method: 'click', arguments: [] },
+      { elementId: '0-2', description: 'ссылка помощи', method: 'click', arguments: [] },
+    ]);
+  });
+
+  it('падает на структурно некорректном ответе (elements — не массив)', () => {
+    expect(() => parseObservation({ elements: 'не массив' })).toThrow();
   });
 
   it('пропускает корректный ответ', () => {
@@ -40,6 +58,12 @@ describe('llm/schemas: observation', () => {
 
   it('запрещает лишние поля в схеме для модели', () => {
     expect(OBSERVATION_SCHEMA.additionalProperties).toBe(false);
+  });
+
+  it('не содержит pattern — недокументированный для structured outputs ключ, который может 400-ить как HIGH 1', () => {
+    // zod уже проверяет тот же формат id на выходе (ELEMENT_ID) — снятие
+    // pattern из JSON Schema не ослабляет валидацию, только убирает риск.
+    expect(JSON.stringify(OBSERVATION_SCHEMA)).not.toContain('pattern');
   });
 });
 

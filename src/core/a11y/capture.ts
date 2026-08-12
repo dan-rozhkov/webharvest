@@ -66,7 +66,7 @@ export async function captureSnapshot(page: Page): Promise<A11ySnapshot> {
 
     const ctx = { tagNameMap, scrollableMap };
     const tree = buildHierarchicalTree(decorateRoles(nodes, encode, ctx), ctx);
-    const outline = tree.map((n) => formatTreeLine(n)).join('\n').trimEnd();
+    const outline = tree.map((n) => formatTreeLine(n, 0, tagNameMap)).join('\n').trimEnd();
 
     return { outline, urlMap, xpathMap, tagNameMap };
   } finally {

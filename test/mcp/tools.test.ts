@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { TOOL_DEFINITIONS, handleScrape, handleSearch } from '../../src/mcp/tools.js';
+import { TOOL_DEFINITIONS, handleScrape, handleSearch, handleBrowserAct } from '../../src/mcp/tools.js';
 import { HarvestError } from '../../src/core/errors.js';
 
 interface CallRecord {
@@ -55,6 +55,13 @@ describe('handleScrape', () => {
     expect(out).not.toContain('at Object.');
   });
 
+  it('llm_refusal объясняется отдельно от blocked — без намёка на антибот', async () => {
+    const failing = { ...client, scrape: async () => { throw new HarvestError('llm_refusal', 'модель отказалась'); } };
+    const out = await handleScrape(failing as never, { url: 'https://a/' });
+    expect(out).not.toContain('закрывает антибот');
+    expect(out).toContain('модель сама отказалась');
+  });
+
   it('передаёт дефолтные значения: refresh=false, includeLinks=false', async () => {
     await handleScrape(client as never, { url: 'https://a/' });
     expect(calls.scrapeArgs).toEqual({ url: 'https://a/', refresh: false, includeLinks: false });
@@ -63,6 +70,15 @@ describe('handleScrape', () => {
   it('переопределяет дефолты явными значениями', async () => {
     await handleScrape(client as never, { url: 'https://b/', refresh: true, includeLinks: true });
     expect(calls.scrapeArgs).toEqual({ url: 'https://b/', refresh: true, includeLinks: true });
+  });
+});
+
+describe('handleBrowserAct', () => {
+  it('llm_refusal на browser_act тоже не выдаётся за антибот-блок', async () => {
+    const failing = { browserAct: async () => { throw new HarvestError('llm_refusal', 'модель отказалась выполнять действие'); } };
+    const out = await handleBrowserAct(failing as never, { sessionId: 's1', instruction: 'сделай что-то' });
+    expect(out).not.toContain('закрывает антибот');
+    expect(out).toContain('модель сама отказалась');
   });
 });
 

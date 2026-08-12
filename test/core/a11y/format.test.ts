@@ -65,4 +65,23 @@ describe('a11y/format: formatTreeLine', () => {
   it('падает обратно на nodeId, если encodedId не проставлен', () => {
     expect(formatTreeLine(node({ role: 'text', nodeId: '99' }))).toBe('[99] text');
   });
+
+  it('печатает value обычного поля как есть — иначе diff после fill пуст, и агент считает, что ввод не сработал', () => {
+    expect(formatTreeLine(node({ role: 'textbox', name: 'Город', value: 'Тбилиси', encodedId: '0-9' })))
+      .toBe('[0-9] textbox: Город = Тбилиси');
+  });
+
+  it('маскирует value поля пароля фиксированной строкой независимо от длины ввода', () => {
+    const line = formatTreeLine(
+      node({ role: 'textbox', name: 'Пароль', value: 'секретный-пароль-123', encodedId: '0-9' }),
+      0,
+      { '0-9': 'input, password' },
+    );
+    expect(line).toBe('[0-9] textbox: Пароль = ••••');
+    expect(line).not.toContain('секретный-пароль-123');
+  });
+
+  it('не печатает value, когда его нет', () => {
+    expect(formatTreeLine(node({ role: 'button', name: 'Ок', encodedId: '0-1' }))).toBe('[0-1] button: Ок');
+  });
 });

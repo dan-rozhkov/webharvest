@@ -1,17 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import Anthropic from '@anthropic-ai/sdk';
-import { createLlmClient, type AnthropicLike } from '../../../src/core/llm/client.js';
+import { createLlmClient, type AnthropicLike, type StructuredCreateParams } from '../../../src/core/llm/client.js';
 import { HarvestError } from '../../../src/core/errors.js';
 
 const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
 const parse = (raw: unknown) => z.object({ ok: z.boolean() }).parse(raw);
 
 /** Поддельный SDK: отдаёт заданный ответ и запоминает параметры запроса. */
-function fakeAnthropic(reply: unknown): AnthropicLike & { lastParams?: Record<string, unknown> } {
-  const stub: AnthropicLike & { lastParams?: Record<string, unknown> } = {
+function fakeAnthropic(reply: unknown): AnthropicLike & { lastParams?: StructuredCreateParams } {
+  const stub: AnthropicLike & { lastParams?: StructuredCreateParams } = {
     messages: {
-      async create(params: Record<string, unknown>) {
+      async create(params: StructuredCreateParams) {
         stub.lastParams = params;
         if (reply instanceof Error) throw reply;
         return reply as { content: Array<{ type: string; text?: string }> };
@@ -38,7 +38,7 @@ describe('llm/client: generateStructured', () => {
   it('шлёт нужную модель и схему, и не шлёт запрещённых параметров', async () => {
     const anthropic = fakeAnthropic({ content: [{ type: 'text', text: '{"ok":true}' }] });
     await createLlmClient({ anthropic }).generateStructured(req, parse);
-    const p = anthropic.lastParams!;
+    const p = anthropic.lastParams! as unknown as Record<string, unknown>;
     expect(p.model).toBe('claude-opus-5');
     // Эти три параметра на Opus 5 возвращают 400 — их не должно быть вовсе.
     expect(p.temperature).toBeUndefined();
@@ -48,6 +48,18 @@ describe('llm/client: generateStructured', () => {
     expect(p.output_format).toBeUndefined();
     const outputConfig = p.output_config as { format?: { schema?: unknown } };
     expect(outputConfig.format?.schema).toEqual(SCHEMA);
+  });
+
+  it('в format уходит ровно type и schema — без name, который API отвергает как лишнее поле', async () => {
+    const anthropic = fakeAnthropic({ content: [{ type: 'text', text: '{"ok":true}' }] });
+    await createLlmClient({ anthropic }).generateStructured(req, parse);
+    const p = anthropic.lastParams!;
+    const outputConfig = p.output_config as unknown as { format?: Record<string, unknown> };
+    // Ключи ровно эти два — если кто-то снова добавит `name` (или любое
+    // другое поле) в format, этот тест упадёт раньше, чем запрос дойдёт до
+    // живого API и вернёт 400 invalid_request_error.
+    expect(Object.keys(outputConfig.format!).sort()).toEqual(['schema', 'type']);
+    expect(outputConfig.format).toEqual({ type: 'json_schema', schema: SCHEMA });
   });
 
   it('пропускает блоки мышления и берёт текстовый', async () => {
@@ -73,13 +85,15 @@ describe('llm/client: generateStructured', () => {
     await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toThrow(HarvestError);
   });
 
-  it('отказ модели (stop_reason: refusal) заворачивается в HarvestError с кодом blocked', async () => {
+  it('отказ модели (stop_reason: refusal) заворачивается в HarvestError с кодом llm_refusal, а не blocked', async () => {
+    // Отдельный код от blocked: это отказ самой модели, а не антибот-защита
+    // сайта — путать их значит подсказывать агенту неверную причину сбоя.
     const anthropic = fakeAnthropic({
       content: [{ type: 'text', text: '{"ok":true}' }],
       stop_reason: 'refusal',
     });
     await expect(createLlmClient({ anthropic }).generateStructured(req, parse)).rejects.toMatchObject({
-      code: 'blocked',
+      code: 'llm_refusal',
     });
   });
 
