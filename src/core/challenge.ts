@@ -1,10 +1,11 @@
 import type { Page } from 'playwright';
-import { detectChallenge } from './escalation.js';
 
 const TURNSTILE_FRAME = 'iframe[src*="challenges.cloudflare.com"][src*="turnstile"]';
 
-/** Быстрые маркеры челленджа в DOM. Полный HTML-анализ (detectChallenge)
- *  дорогой — вызывается только если хотя бы один маркер нашёлся. */
+/** Быстрые маркеры челленджа в DOM. Работаем с живым DOM, поэтому полный
+ *  HTML-анализ (detectChallenge из escalation.ts) здесь не нужен — эти
+ *  селекторы и заголовок покрывают и классический CF-интерстишель, и
+ *  Turnstile-виджет. */
 const QUICK_SELECTORS = [
   TURNSTILE_FRAME,
   '#cf-turnstile',
@@ -79,6 +80,3 @@ export async function waitForChallengeResolution(page: Page, opts: { timeoutMs: 
   }
   return !(await isChallengeActive(page));
 }
-
-/** Экспорт для тестов: детект по HTML через escalation-детектор. */
-export { detectChallenge };
