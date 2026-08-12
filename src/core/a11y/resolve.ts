@@ -1,10 +1,14 @@
 /**
  * Превращение адреса из снапшота в живой элемент.
  *
- * Основной путь — `DOM.resolveNode` по `backendNodeId`: адрес указывает прямо
- * на узел, никакой селектор по дороге не участвует, поэтому ломаться нечему.
- * Он перестаёт работать ровно в одном случае — узел пересоздали после захвата
- * снапшота. Тогда идём в запасной путь по XPath.
+ * Адресация позиционная: `encodedId` — это не ссылка на конкретный
+ * DOM-объект, а закодированный путь от корня документа (наш диалект XPath,
+ * см. `resolveByXPath` ниже). Именно поэтому резолв переживает пересоздание
+ * узла — `/html[1]/body[1]/button[1]` остаётся верным адресом, даже когда
+ * сам `<button>` уже другой DOM-объект, лишь бы структура вокруг него не
+ * изменилась. Раньше здесь была ещё проверка через `DOM.resolveNode` по
+ * `backendNodeId` — её убрали: элемент в любом случае поднимается по этому
+ * же XPath, так что CDP-проверка ничего не решала, только дублировала код.
  */
 import type { ElementHandle, Page } from 'playwright';
 import type { A11ySnapshot } from './types.js';
@@ -81,18 +85,25 @@ function resolveByXPath(xpath: string): Element | null {
     }
     if (part === '' || part === '/') continue;
 
+    const steps = part.split('/').filter((s) => s !== '');
     let current: Node = root;
-    for (const step of part.split('/')) {
-      if (!step) continue;
-      const found = stepDown(current, step);
+    for (let j = 0; j < steps.length; j++) {
+      const found = stepDown(current, steps[j]!);
       if (!found) return null;
       current = found;
       // Same-process iframe: dom-index.ts продолжает путь через
       // `contentDocument`, не тратя на переход отдельный сегмент, — значит и
       // здесь следующий шаг ищем среди детей документа фрейма, а не самого
-      // `<iframe>`.
-      const contentDocument = (current as HTMLIFrameElement).contentDocument;
-      if (contentDocument) current = contentDocument;
+      // `<iframe>`. Но только если шаг не последний: если адрес указывает на
+      // сам `<iframe>` (его backendNodeId и backendNodeId его contentDocument
+      // делят один и тот же путь), нырять здесь нельзя — иначе вместо
+      // элемента-хендла на iframe мы бы всегда возвращали его Document, а
+      // `asElement()` на Document даёт `null`.
+      const isTerminalStep = i === segments.length - 1 && j === steps.length - 1;
+      if (!isTerminalStep) {
+        const contentDocument = (current as HTMLIFrameElement).contentDocument;
+        if (contentDocument) current = contentDocument;
+      }
     }
     node = current;
   }
@@ -104,35 +115,12 @@ export async function resolveElement(
   encodedId: string,
   snapshot: A11ySnapshot,
 ): Promise<ResolvedElement> {
-  const { frameOrdinal, backendNodeId } = parseEncodedId(encodedId);
+  const { frameOrdinal } = parseEncodedId(encodedId);
   if (frameOrdinal !== 0) {
     throw new HarvestError(
       'not_found',
       `Адрес ${encodedId} указывает на кросс-доменный фрейм — в этой версии они не поддержаны`,
     );
-  }
-
-  const cdp = await page.context().newCDPSession(page);
-  try {
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId });
-    if (object?.objectId) {
-      // Playwright умеет поднять свой ElementHandle из сырого objectId, но
-      // публичного API для этого нет; вместо этого просим страницу вернуть
-      // элемент по тому же пути, что и запасной, — так handle остаётся
-      // полноценным Playwright-объектом со всеми авто-ожиданиями.
-      const xpath = snapshot.xpathMap[encodedId];
-      if (xpath) {
-        const handle = await page.evaluateHandle(resolveByXPath, xpath);
-        const element = handle.asElement() as ResolvedElement | null;
-        if (element) return element;
-        await handle.dispose();
-      }
-    }
-  } catch {
-    // Узла с таким backendNodeId уже нет — это ожидаемо после перерисовки,
-    // просто идём в запасной путь ниже.
-  } finally {
-    await cdp.detach().catch(() => {});
   }
 
   const xpath = snapshot.xpathMap[encodedId];
