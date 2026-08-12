@@ -186,9 +186,34 @@ PDFs are not parsed. The scraper detects the non-HTML content type and returns a
 
 Pages that require login are not supported. The scraper has no credential storage, session management, or form-filling logic for authentication. If a page redirects to a login screen, the scraper will return the login page HTML, not the authenticated content.
 
-### ❌ Interactive Anti-Bot Challenges
+### ⚠️ Interactive Anti-Bot Challenges — partially solved
 
-Challenges like Cloudflare Turnstile, hCaptcha, or DataDome are **not solved**. These are reported with status `blocked` and an explanation in the response. There is no integration with captcha-solving services.
+Challenges like Cloudflare Turnstile are handled **best-effort**, not guaranteed:
+
+- **Real Chrome**: with `browserChannel: "chrome"` the scraper drives your system
+  Google Chrome instead of bundled chromium — it passes Cloudflare's
+  bot checks far more often. If Chrome is not installed, webharvest falls
+  back to bundled chromium automatically.
+- **Persistent profile**: with `browserProfileDir` set, the browser keeps a
+  persistent profile, so cookies (including Cloudflare's `cf_clearance`)
+  survive daemon restarts. The first visit to a protected site warms the
+  clearance; subsequent visits go straight through.
+- **Challenge handling**: when a Cloudflare/Turnstile challenge appears, the
+  scraper waits for it to auto-resolve (most Turnstile checks pass without
+  any input) and, after ~4s, clicks the Turnstile checkbox once as a
+  best-effort nudge for interactive mode.
+
+Example: `https://www.bazaraki.com` (behind Cloudflare Turnstile) returns its
+real content via the browser with `browserChannel: "chrome"`.
+
+What is **not** solved:
+
+- Interactive hCaptcha/DataDome challenges and any challenge requiring manual
+  input (image selection, etc.)
+- Blocking based on IP reputation — rotating proxies are out of scope
+
+If a challenge cannot be resolved, the response reports status `blocked` with
+an explanation. There is no integration with captcha-solving services.
 
 ### ❌ robots.txt Is Not Enforced as a Prohibition
 
@@ -229,6 +254,19 @@ Environment variables override config file settings:
 - `WEBHARVEST_PORT` — daemon listening port
 - `WEBHARVEST_SEARXNG_URL` — search backend URL
 - `BRAVE_API_KEY` — optional Brave Search API key (for fallback search)
+- `WEBHARVEST_BROWSER_CHANNEL` — `"chromium"` (default) | `"chrome"` — use your
+  system Google Chrome instead of the bundled chromium. Real Chrome passes
+  Cloudflare/Turnstile checks much more often. If Chrome is not installed, the
+  daemon automatically falls back to bundled chromium.
+- `WEBHARVEST_BROWSER_PROFILE_DIR` — path to a persistent browser profile.
+  Cookies (including Cloudflare's `cf_clearance`) survive daemon restarts,
+  so protected sites are only "warmed up" once. Disabled by default. Note:
+  the profile is shared between scrape and browser-use via two subdirectories
+  (`<dir>/scrape` and `<dir>/sessions`) — two Chromium processes cannot share
+  one `userDataDir`, hence the split.
+
+The same keys can be set in `~/.webharvest/config.json` as `browserChannel`
+and `browserProfileDir`.
 
 Note: `host` and `allowPrivate` cannot be set from config.json for security reasons. The daemon always binds to `127.0.0.1` only.
 
