@@ -6,7 +6,7 @@
  * инференс тестируется без Chromium, а исполнение — без модели.
  */
 import type { A11ySnapshot } from './a11y/types.js';
-import type { LlmClient } from './llm/client.js';
+import type { LlmClient, JsonSchema } from './llm/client.js';
 import type { ActionRequest } from './actions.js';
 import {
   OBSERVATION_SCHEMA,
@@ -21,6 +21,8 @@ import {
   buildActStepTwoUserPrompt,
   buildActSystemPrompt,
   buildActUserPrompt,
+  buildExtractSystemPrompt,
+  buildExtractUserPrompt,
   type VariableSpec,
 } from './llm/prompts.js';
 
@@ -176,4 +178,52 @@ export async function planActStepTwo(
     method: action.method,
     arguments: substituteVariables(action.arguments, params.variables),
   };
+}
+
+const ELEMENT_ID_LIKE = /^\d+-\d+$/;
+
+/**
+ * Рекурсивная замена адресов элементов на настоящие ссылки. Промпт extract
+ * велит модели отдавать ссылки идентификаторами, а не текстом — так она
+ * физически не может выдумать URL, потому что в дереве их нет. Здесь мы
+ * возвращаем адреса обратно в ссылки.
+ */
+function resolveLinks(value: unknown, urlMap: Record<string, string>): unknown {
+  if (typeof value === 'string') {
+    return ELEMENT_ID_LIKE.test(value) && urlMap[value] ? urlMap[value] : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => resolveLinks(v, urlMap));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) out[k] = resolveLinks(v, urlMap);
+    return out;
+  }
+  return value;
+}
+
+export interface ExtractParams {
+  instruction: string;
+  snapshot: A11ySnapshot;
+  /** JSON Schema желаемого результата — её задаёт вызывающий. */
+  schema: JsonSchema;
+  userInstructions?: string;
+}
+
+export async function extract(deps: InferenceDeps, params: ExtractParams): Promise<unknown> {
+  const raw = await deps.llm.generateStructured(
+    {
+      name: 'Extraction',
+      systemPrompt: buildExtractSystemPrompt(params.userInstructions),
+      userPrompt: buildExtractUserPrompt(params.instruction, params.snapshot.outline),
+      schema: params.schema,
+      // Извлечение требует больше внимания, чем выбор одного элемента:
+      // здесь модель должна пройти всё дерево и ничего не потерять.
+      effort: 'medium',
+    },
+    // Схему задаёт вызывающий, поэтому своей валидации здесь нет: гарантию
+    // соответствия даёт output_config.format на стороне API.
+    (v) => v,
+  );
+
+  return resolveLinks(raw, params.snapshot.urlMap);
 }
