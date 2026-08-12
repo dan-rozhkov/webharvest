@@ -9,9 +9,14 @@ import {
   handleScrape,
   handleSearch,
   handleBrowserOpen,
-  handleBrowserObserve,
-  handleBrowserAct,
-  handleBrowserExtract,
+  handleBrowserSnapshot,
+  handleBrowserClick,
+  handleBrowserHover,
+  handleBrowserFill,
+  handleBrowserType,
+  handleBrowserPress,
+  handleBrowserSelect,
+  handleBrowserScroll,
   handleBrowserClose,
 } from './tools.js';
 
@@ -38,9 +43,14 @@ export function createMcpServer(client: DaemonClient): Server {
       req.params.name === 'scrape' ? await handleScrape(client, args as never)
       : req.params.name === 'search' ? await handleSearch(client, args as never)
       : req.params.name === 'browser_open' ? await handleBrowserOpen(client, args as never)
-      : req.params.name === 'browser_observe' ? await handleBrowserObserve(client, args as never)
-      : req.params.name === 'browser_act' ? await handleBrowserAct(client, args as never)
-      : req.params.name === 'browser_extract' ? await handleBrowserExtract(client, args as never)
+      : req.params.name === 'browser_snapshot' ? await handleBrowserSnapshot(client, args as never)
+      : req.params.name === 'browser_click' ? await handleBrowserClick(client, args as never)
+      : req.params.name === 'browser_hover' ? await handleBrowserHover(client, args as never)
+      : req.params.name === 'browser_fill' ? await handleBrowserFill(client, args as never)
+      : req.params.name === 'browser_type' ? await handleBrowserType(client, args as never)
+      : req.params.name === 'browser_press' ? await handleBrowserPress(client, args as never)
+      : req.params.name === 'browser_select' ? await handleBrowserSelect(client, args as never)
+      : req.params.name === 'browser_scroll' ? await handleBrowserScroll(client, args as never)
       : req.params.name === 'browser_close' ? await handleBrowserClose(client, args as never)
       : `Неизвестный инструмент: ${req.params.name}`;
     return { content: [{ type: 'text', text }] };

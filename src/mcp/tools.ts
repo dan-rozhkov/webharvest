@@ -2,6 +2,10 @@ import { HarvestError } from '../core/errors.js';
 import { formatScrape, formatSearch } from '../core/format.js';
 import type { DaemonClient } from './client.js';
 
+const ELEMENT_ID_HINT =
+  'Адрес элемента — строка вида «0-18372» (ординал фрейма и id узла через дефис), скопированная ' +
+  'из дерева, которое вернул последний browser_open или browser_snapshot на этой сессии.';
+
 export const TOOL_DEFINITIONS = [
   {
     name: 'scrape',
@@ -39,7 +43,9 @@ export const TOOL_DEFINITIONS = [
     description:
       'Открывает страницу в живом браузере и возвращает id сессии и дерево страницы. ' +
       'Страница остаётся открытой между вызовами. Используй, когда со страницей надо ' +
-      'взаимодействовать, а не просто прочитать её — для чтения есть scrape.',
+      `взаимодействовать, а не просто прочитать её — для чтения есть scrape. ${ELEMENT_ID_HINT} ` +
+      'Дальше сам решай по дереву, какие элементы кликать/заполнять — отдельного шага ' +
+      '«осмотреться» не требуется.',
     inputSchema: {
       type: 'object',
       properties: { url: { type: 'string', description: 'Полный URL страницы' } },
@@ -47,53 +53,135 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
-    name: 'browser_observe',
+    name: 'browser_snapshot',
     description:
-      'Находит на открытой странице элементы по описанию и возвращает их адреса и ' +
-      'возможные действия, ничего не делая. Используй, чтобы осмотреться перед действием.',
+      'Возвращает свежее дерево той же открытой страницы, не выполняя никакого действия. ' +
+      'Используй, чтобы посмотреть на текущее состояние страницы: после навигации, которую не отследить ' +
+      `дифом действия, или просто чтобы свериться перед следующим шагом. ${ELEMENT_ID_HINT}`,
     inputSchema: {
       type: 'object',
-      properties: {
-        sessionId: { type: 'string', description: 'id сессии из browser_open' },
-        instruction: { type: 'string', description: 'Что искать, обычными словами' },
-      },
-      required: ['sessionId', 'instruction'],
+      properties: { sessionId: { type: 'string', description: 'id сессии из browser_open' } },
+      required: ['sessionId'],
     },
   },
   {
-    name: 'browser_act',
+    name: 'browser_click',
     description:
-      'Выполняет одно действие на открытой странице по описанию: клик, ввод текста, ' +
-      'выбор в списке, прокрутка. Возвращает, что изменилось на странице. ' +
-      'Используй по одному действию за раз.',
+      'Кликает по элементу на открытой странице и возвращает, что изменилось (диф дерева до/после). ' +
+      'elementId должен быть скопирован из последнего снапшота этой сессии (browser_open/browser_snapshot ' +
+      'или ответа предыдущего действия) — после каждого действия адреса элементов могут смениться.',
     inputSchema: {
       type: 'object',
       properties: {
         sessionId: { type: 'string', description: 'id сессии из browser_open' },
-        instruction: { type: 'string', description: 'Одно действие, обычными словами' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+      },
+      required: ['sessionId', 'elementId'],
+    },
+  },
+  {
+    name: 'browser_hover',
+    description:
+      'Наводит курсор на элемент (без клика) и возвращает, что изменилось на странице — полезно для ' +
+      'меню и подсказок, раскрывающихся по hover. elementId должен быть скопирован из последнего снапшота ' +
+      'этой сессии — после каждого действия адреса элементов могут смениться.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+      },
+      required: ['sessionId', 'elementId'],
+    },
+  },
+  {
+    name: 'browser_fill',
+    description:
+      'Очищает текстовое поле и вписывает в него значение целиком. elementId должен быть скопирован из ' +
+      'последнего снапшота этой сессии — после каждого действия адреса элементов могут смениться. ' +
+      'Секреты (пароли, токены) не пиши в text открытым текстом: вставь в text плейсхолдер вида %password% ' +
+      'и передай настоящее значение в variables — {"password": "..."}. Демон подставит его прямо перед ' +
+      'вводом в браузер, минуя твой собственный контекст, так что значение не осядет в истории диалога.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+        text: { type: 'string', description: 'Значение поля целиком; секреты — плейсхолдером %имя%' },
         variables: {
           type: 'object',
-          description:
-            'Значения для подстановки: в инструкции упоминай их как %имя%. ' +
-            'Сами значения модели не показываются — так передаются пароли и токены.',
+          description: 'Значения плейсхолдеров из text: ключ — имя без %, значение — то, что реально ввести',
         },
       },
-      required: ['sessionId', 'instruction'],
+      required: ['sessionId', 'elementId', 'text'],
     },
   },
   {
-    name: 'browser_extract',
+    name: 'browser_type',
     description:
-      'Достаёт данные с открытой страницы в заданной JSON-схеме. ' +
-      'Используй, когда нужен структурированный результат, а не текст страницы.',
+      'Печатает текст в поле посимвольно, генерируя настоящие события клавиатуры — используй вместо ' +
+      'browser_fill там, где поле реагирует на ввод по символам (автокомплиты, маски ввода). elementId ' +
+      'должен быть скопирован из последнего снапшота этой сессии. Та же подстановка секретов через ' +
+      'variables и плейсхолдеры %имя%, что и у browser_fill.',
     inputSchema: {
       type: 'object',
       properties: {
         sessionId: { type: 'string', description: 'id сессии из browser_open' },
-        instruction: { type: 'string', description: 'Что извлечь' },
-        schema: { type: 'object', description: 'JSON Schema желаемого результата' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+        text: { type: 'string', description: 'Текст для посимвольного ввода; секреты — плейсхолдером %имя%' },
+        variables: {
+          type: 'object',
+          description: 'Значения плейсхолдеров из text: ключ — имя без %, значение — то, что реально ввести',
+        },
       },
-      required: ['sessionId', 'instruction', 'schema'],
+      required: ['sessionId', 'elementId', 'text'],
+    },
+  },
+  {
+    name: 'browser_press',
+    description:
+      'Нажимает одну клавишу (Enter, Escape, Tab, ArrowDown и т. п.) на сфокусированном элементе. ' +
+      'elementId должен быть скопирован из последнего снапшота этой сессии — после каждого действия ' +
+      'адреса элементов могут смениться.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+        key: { type: 'string', description: 'Название клавиши в терминах Playwright, например Enter' },
+      },
+      required: ['sessionId', 'elementId', 'key'],
+    },
+  },
+  {
+    name: 'browser_select',
+    description:
+      'Выбирает пункт в нативном выпадающем списке (<select>) по подписи. Кастомные (не нативные) ' +
+      'выпадающие списки так не открываются — их нужно сначала раскрыть browser_click, затем кликнуть по ' +
+      'нужному пункту. elementId должен быть скопирован из последнего снапшота этой сессии.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        elementId: { type: 'string', description: 'Адрес элемента <select> из последнего снапшота' },
+        value: { type: 'string', description: 'Подпись нужного пункта списка' },
+      },
+      required: ['sessionId', 'elementId', 'value'],
+    },
+  },
+  {
+    name: 'browser_scroll',
+    description:
+      'Прокручивает элемент (если он сам прокручиваемый) или всю страницу до указанной доли высоты. ' +
+      'elementId должен быть скопирован из последнего снапшота этой сессии.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+        percent: { type: 'string', description: 'Доля прокрутки в процентах, например "50" или "100%"' },
+      },
+      required: ['sessionId', 'elementId', 'percent'],
     },
   },
   {
@@ -111,9 +199,8 @@ function explain(e: unknown): string {
   if (HarvestError.is(e)) {
     const hint =
       e.code === 'blocked' ? ' Попробуй другой источник — эту страницу закрывает антибот.'
-      : e.code === 'llm_refusal' ? ' Дело не в антиботе: модель сама отказалась выполнить этот шаг — переформулируй инструкцию или попробуй другой подход.'
       : e.code === 'timeout' ? ' Можно повторить попытку.'
-      : e.code === 'not_found' ? ' Открой страницу заново через browser_open.'
+      : e.code === 'not_found' ? ' Открой страницу заново через browser_open или сними свежий снапшот.'
       : '';
     const msg = e.message.endsWith('.') ? e.message : `${e.message}.`;
     return `Не удалось: ${msg}${hint}`;
@@ -165,42 +252,94 @@ export async function handleBrowserOpen(
   }
 }
 
-export async function handleBrowserObserve(
+export async function handleBrowserSnapshot(
   client: DaemonClient,
-  args: { sessionId: string; instruction: string },
+  args: { sessionId: string },
 ): Promise<string> {
   try {
-    const r = await client.browserObserve(args);
-    if (r.elements.length === 0) return 'Подходящих элементов не нашлось.';
-    return r.elements
-      .map((e) => `[${e.elementId}] ${e.description} — ${e.method}`)
-      .join('\n');
+    const r = await client.browserSnapshot(args);
+    return `Дерево страницы:\n${r.outline}`;
   } catch (e) {
     return explain(e);
   }
 }
 
-export async function handleBrowserAct(
+function formatChanged(changed: string): string {
+  return changed ? `Сделано. На странице появилось:\n${changed}` : 'Сделано. Видимых изменений на странице нет.';
+}
+
+export async function handleBrowserClick(
   client: DaemonClient,
-  args: { sessionId: string; instruction: string; variables?: Record<string, string> },
+  args: { sessionId: string; elementId: string },
 ): Promise<string> {
   try {
-    const r = await client.browserAct(args);
-    if (!r.performed) return 'Подходящего элемента для этого действия на странице нет.';
-    return r.changed
-      ? `Сделано: ${r.description}\n\nНа странице появилось:\n${r.changed}`
-      : `Сделано: ${r.description}\n\nВидимых изменений на странице нет.`;
+    return formatChanged((await client.browserClick(args)).changed);
   } catch (e) {
     return explain(e);
   }
 }
 
-export async function handleBrowserExtract(
+export async function handleBrowserHover(
   client: DaemonClient,
-  args: { sessionId: string; instruction: string; schema: Record<string, unknown> },
+  args: { sessionId: string; elementId: string },
 ): Promise<string> {
   try {
-    return JSON.stringify(await client.browserExtract(args), null, 2);
+    return formatChanged((await client.browserHover(args)).changed);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserFill(
+  client: DaemonClient,
+  args: { sessionId: string; elementId: string; text: string; variables?: Record<string, string> },
+): Promise<string> {
+  try {
+    return formatChanged((await client.browserFill(args)).changed);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserType(
+  client: DaemonClient,
+  args: { sessionId: string; elementId: string; text: string; variables?: Record<string, string> },
+): Promise<string> {
+  try {
+    return formatChanged((await client.browserType(args)).changed);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserPress(
+  client: DaemonClient,
+  args: { sessionId: string; elementId: string; key: string },
+): Promise<string> {
+  try {
+    return formatChanged((await client.browserPress(args)).changed);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserSelect(
+  client: DaemonClient,
+  args: { sessionId: string; elementId: string; value: string },
+): Promise<string> {
+  try {
+    return formatChanged((await client.browserSelect(args)).changed);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserScroll(
+  client: DaemonClient,
+  args: { sessionId: string; elementId: string; percent: string },
+): Promise<string> {
+  try {
+    return formatChanged((await client.browserScroll(args)).changed);
   } catch (e) {
     return explain(e);
   }

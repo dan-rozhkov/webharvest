@@ -232,6 +232,57 @@ Environment variables override config file settings:
 
 Note: `host` and `allowPrivate` cannot be set from config.json for security reasons. The daemon always binds to `127.0.0.1` only.
 
+There is no LLM configuration, and no LLM API key is ever needed. The daemon
+doesn't run its own model — browser-use is a set of deterministic tools
+(`browser_open`, `browser_snapshot`, `browser_click`, `browser_fill`, …) that
+directly manipulate the page; the reasoning about *what* to do with the page
+is left entirely to whichever agent is calling webharvest (e.g. Claude Code),
+which already sees the page tree in its own context.
+
+## Browser Use Tools
+
+Beyond `scrape` and `search`, webharvest exposes a small set of deterministic
+browser-automation tools over MCP. There is no inference step in the daemon:
+every tool call does exactly the one thing it's named for, and returns a
+diff of what changed on the page (or the fresh page tree itself) so the
+calling agent can decide the next step.
+
+- `browser_open(url)` — opens a page in a real (headless) browser, returns a
+  `sessionId` and the page's accessibility tree. The page stays open between
+  calls.
+- `browser_snapshot(sessionId)` — returns a fresh tree of the same page,
+  without performing any action.
+- `browser_click(sessionId, elementId)`
+- `browser_hover(sessionId, elementId)`
+- `browser_fill(sessionId, elementId, text, variables?)` — clears the field
+  and types `text` into it.
+- `browser_type(sessionId, elementId, text, variables?)` — types `text`
+  character by character (real keydown events), for fields that need it
+  (autocompletes, input masks).
+- `browser_press(sessionId, elementId, key)`
+- `browser_select(sessionId, elementId, value)` — picks an option in a
+  native `<select>` by its label.
+- `browser_scroll(sessionId, elementId, percent)`
+- `browser_close(sessionId)`
+
+`elementId` is a `frame-node` address (e.g. `0-18372`) copied verbatim from
+the tree returned by the last `browser_open`/`browser_snapshot` call, or from
+the diff returned by the previous action — addresses can change after every
+action, so always use the freshest one.
+
+`browser_fill`/`browser_type` still support the same `variables` +
+`%name%`-placeholder mechanism as before. Its purpose changed along with the
+architecture: it used to keep secrets out of the daemon's own model call;
+now, with no model inside the daemon, it keeps secrets out of the calling
+agent's own context instead — write `%password%` in `text`, pass the real
+value as `variables: { password: "..." }`, and the daemon substitutes it
+right before typing into the browser. The value never has to appear in the
+agent's conversation history to be used. The substituted value is still
+redacted back out of the page tree the daemon returns (see
+`redactSecrets`/`registerSecrets` in `src/core/a11y/format.ts` and
+`src/daemon/service.ts`), so it doesn't leak back to the agent through a
+later snapshot either.
+
 ## Architecture
 
 - **src/core/** — Scraping logic: browser pool, SSRF protection, cache

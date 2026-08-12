@@ -245,6 +245,89 @@ describe('Service.scrape', () => {
   }, 30_000);
 });
 
+describe('Service: детерминированные browser-use действия (без модели внутри демона)', () => {
+  const form =
+    '<html><head><meta charset="utf-8"><title>Форма</title></head><body>' +
+    '<input id="name" type="text" />' +
+    '<button id="reveal" onclick="document.getElementById(\'out\').textContent = \'Готово: \' + document.getElementById(\'name\').value">Отправить</button>' +
+    '<div id="out"></div>' +
+    '</body></html>';
+
+  function findElementId(outline: string, needle: string): string {
+    const line = outline.split('\n').find((l) => l.includes(needle));
+    if (!line) throw new Error(`не нашёл «${needle}» в outline:\n${outline}`);
+    const m = /\[(\d+-\d+)]/.exec(line);
+    if (!m) throw new Error(`строка без адреса: ${line}`);
+    return m[1]!;
+  }
+
+  it('browser_snapshot возвращает свежее дерево той же страницы без выполнения действия', async () => {
+    const base = await serve(form);
+    const svc = createService(cfg());
+    const { sessionId, outline } = await svc.browserOpen!({ url: base + '/' });
+    try {
+      const snap = await svc.browserSnapshot!({ sessionId });
+      expect(snap.outline).toBe(outline);
+    } finally {
+      await svc.browserClose!({ sessionId });
+      await svc.shutdown();
+    }
+  });
+
+  it('browser_fill заполняет поле, browser_click кликает, диф действия показывает результат', async () => {
+    const base = await serve(form);
+    const svc = createService(cfg());
+    const { sessionId, outline } = await svc.browserOpen!({ url: base + '/' });
+    try {
+      const nameId = findElementId(outline, 'textbox');
+      const fillResult = await svc.browserFill!({ sessionId, elementId: nameId, text: 'Аня' });
+      expect(fillResult.changed).toContain('Аня');
+
+      const afterFill = await svc.browserSnapshot!({ sessionId });
+      const buttonId = findElementId(afterFill.outline, 'Отправить');
+      const clickResult = await svc.browserClick!({ sessionId, elementId: buttonId });
+      expect(clickResult.changed).toContain('Готово: Аня');
+    } finally {
+      await svc.browserClose!({ sessionId });
+      await svc.shutdown();
+    }
+  });
+
+  it('browser_fill с variables подставляет значение по плейсхолдеру, не требуя его в тексте вызова', async () => {
+    const base = await serve(form);
+    const svc = createService(cfg());
+    const { sessionId, outline } = await svc.browserOpen!({ url: base + '/' });
+    try {
+      const nameId = findElementId(outline, 'textbox');
+      await svc.browserFill!({ sessionId, elementId: nameId, text: '%secret%', variables: { secret: 'сложный-пароль' } });
+
+      const afterFill = await svc.browserSnapshot!({ sessionId });
+      // Само поле уже отредактировано на этом снапшоте — плейсхолдер, не значение.
+      expect(afterFill.outline).not.toContain('сложный-пароль');
+      expect(afterFill.outline).toContain('%secret%');
+
+      const buttonId = findElementId(afterFill.outline, 'Отправить');
+      const clickResult = await svc.browserClick!({ sessionId, elementId: buttonId });
+      // Кнопка прочитала настоящее значение из DOM (механизм действительно
+      // подставил секрет в браузер) — но диф, уходящий вызывающему агенту,
+      // видит уже отредактированный текст, а не сам секрет.
+      expect(clickResult.changed).toContain('Готово: %secret%');
+      expect(clickResult.changed).not.toContain('сложный-пароль');
+    } finally {
+      await svc.browserClose!({ sessionId });
+      await svc.shutdown();
+    }
+  });
+
+  it('действие на неизвестной сессии — not_found', async () => {
+    const svc = createService(cfg());
+    const err = await svc.browserClick!({ sessionId: 'no-such-session', elementId: '0-1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(HarvestError);
+    expect(err.code).toBe('not_found');
+    await svc.shutdown();
+  });
+});
+
 describe('Service.search', () => {
   it('усечённое содержимое поиска помечено явно (truncated/remaining), а не молча обрезано', async () => {
     const longArticle =

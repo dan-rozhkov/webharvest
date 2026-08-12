@@ -26,22 +26,22 @@ describe('mcp/client: таймауты browser_* длиннее, чем у scrap
     expect(opts.bodyTimeout).toBe(120_000);
   });
 
-  it('browser_open уходит с увеличенным (600с) таймаутом — дольше дефолтного', async () => {
+  it('browser_open уходит с увеличенным (180с) таймаутом — дольше дефолтного', async () => {
     const { createDaemonClient } = await import('../../src/mcp/client.js');
     const c = createDaemonClient('http://127.0.0.1:1');
     await c.browserOpen({ url: 'https://a/' });
     const opts = requestMock.mock.calls[0]![1] as { headersTimeout: number; bodyTimeout: number };
-    expect(opts.headersTimeout).toBe(600_000);
-    expect(opts.bodyTimeout).toBe(600_000);
+    expect(opts.headersTimeout).toBe(180_000);
+    expect(opts.bodyTimeout).toBe(180_000);
     expect(opts.headersTimeout).toBeGreaterThan(120_000);
   });
 
-  it('browser_act тоже уходит с увеличенным таймаутом', async () => {
+  it('browser_click тоже уходит с увеличенным таймаутом', async () => {
     const { createDaemonClient } = await import('../../src/mcp/client.js');
     const c = createDaemonClient('http://127.0.0.1:1');
-    requestMock.mockResolvedValueOnce({ statusCode: 200, body: jsonBody({ performed: false, description: '', changed: '' }) });
-    await c.browserAct({ sessionId: 's1', instruction: 'клик' });
+    requestMock.mockResolvedValueOnce({ statusCode: 200, body: jsonBody({ changed: '' }) });
+    await c.browserClick({ sessionId: 's1', elementId: '0-1' });
     const opts = requestMock.mock.calls[0]![1] as { headersTimeout: number; bodyTimeout: number };
-    expect(opts.headersTimeout).toBe(600_000);
+    expect(opts.headersTimeout).toBe(180_000);
   });
 });

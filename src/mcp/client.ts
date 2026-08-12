@@ -2,20 +2,17 @@ import { request } from 'undici';
 import { HarvestError, type ErrorCode } from '../core/errors.js';
 import type { ScrapePayload } from '../core/format.js';
 import type { SearchResult } from '../core/search/types.js';
-import type { ObservedElement } from '../core/llm/schemas.js';
 
 export interface BrowserOpenResult {
   sessionId: string;
   outline: string;
 }
 
-export interface BrowserObserveResult {
-  elements: ObservedElement[];
+export interface BrowserSnapshotResult {
+  outline: string;
 }
 
-export interface BrowserActResult {
-  performed: boolean;
-  description: string;
+export interface BrowserActionResult {
   changed: string;
 }
 
@@ -24,20 +21,14 @@ interface ErrorBody { error?: { code?: ErrorCode; message?: string; detail?: Rec
 // scrape/search — один HTTP-фетч плюс, максимум, один запуск браузера на
 // рендер; 2 минуты с запасом хватает.
 const DEFAULT_TIMEOUT_MS = 120_000;
-// browser_act (и остальные browser_* — extract идёт с effort: 'medium' на
-// полное дерево, open делает навигацию плюс снапшот) может сделать до двух
-// круговых рейсов к Opus 5 (адаптивное мышление, max_tokens: 16000,
-// нестриминговый ответ) плюс несколько CDP-снапшотов и settle-паузы. У
-// самого SDK таймаут на вызов модели — 10 минут; выставлять демону таймаут
-// короче него бессмысленно — можно словить локальный timeout, пока демон
-// всё ещё честно ждёт ответа модели. Ставим тот же потолок.
-//
-// Это не устраняет риск двойной отправки целиком: если демон всё же не
-// уложится и в эти 10 минут, агент получит timeout и может повторить
-// действие, а исполненное на сервере действие к этому моменту уже могло
-// пройти — идемпотентности на этом пути нет. Таймаут снижает вероятность
-// такого гонки, но не закрывает её полностью.
-const BROWSER_TIMEOUT_MS = 600_000;
+// browser_* — open делает навигацию плюс CDP-снапшот полного дерева, а любое
+// действие (click/fill/type/...) — снапшот "до", исполнение, паузу на
+// перерисовку (settleAfterAction) и снапшот "после". Модели внутри демона
+// больше нет (см. daemon/service.ts) — весь бюджет времени уходит на сам
+// браузер, а не на круговые рейсы к LLM, но медленная страница (тяжёлый JS,
+// долгая сеть) всё ещё может занять существенно больше дефолтных 120с,
+// поэтому у browser_* остаётся отдельный, больший потолок.
+const BROWSER_TIMEOUT_MS = 180_000;
 
 export function createDaemonClient(baseUrl: string) {
   async function call<T>(path: string, body: unknown, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
@@ -91,9 +82,14 @@ export function createDaemonClient(baseUrl: string) {
     scrape: (body: unknown) => call<ScrapePayload>('/scrape', body),
     search: async (body: unknown) => (await call<{ results: SearchResult[] }>('/search', body)).results,
     browserOpen: (body: unknown) => call<BrowserOpenResult>('/browser/open', body, BROWSER_TIMEOUT_MS),
-    browserObserve: (body: unknown) => call<BrowserObserveResult>('/browser/observe', body, BROWSER_TIMEOUT_MS),
-    browserAct: (body: unknown) => call<BrowserActResult>('/browser/act', body, BROWSER_TIMEOUT_MS),
-    browserExtract: (body: unknown) => call<unknown>('/browser/extract', body, BROWSER_TIMEOUT_MS),
+    browserSnapshot: (body: unknown) => call<BrowserSnapshotResult>('/browser/snapshot', body, BROWSER_TIMEOUT_MS),
+    browserClick: (body: unknown) => call<BrowserActionResult>('/browser/click', body, BROWSER_TIMEOUT_MS),
+    browserHover: (body: unknown) => call<BrowserActionResult>('/browser/hover', body, BROWSER_TIMEOUT_MS),
+    browserFill: (body: unknown) => call<BrowserActionResult>('/browser/fill', body, BROWSER_TIMEOUT_MS),
+    browserType: (body: unknown) => call<BrowserActionResult>('/browser/type', body, BROWSER_TIMEOUT_MS),
+    browserPress: (body: unknown) => call<BrowserActionResult>('/browser/press', body, BROWSER_TIMEOUT_MS),
+    browserSelect: (body: unknown) => call<BrowserActionResult>('/browser/select', body, BROWSER_TIMEOUT_MS),
+    browserScroll: (body: unknown) => call<BrowserActionResult>('/browser/scroll', body, BROWSER_TIMEOUT_MS),
     browserClose: async (body: unknown) => { await call<Record<string, never>>('/browser/close', body, BROWSER_TIMEOUT_MS); },
   };
 }

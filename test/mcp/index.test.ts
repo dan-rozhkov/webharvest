@@ -38,7 +38,18 @@ describe('MCP server (real Server + real Client, in-memory transport)', () => {
     const mcpClient = await connect(stubClient());
     const { tools } = await mcpClient.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
-      'browser_act', 'browser_close', 'browser_extract', 'browser_observe', 'browser_open', 'scrape', 'search',
+      'browser_click',
+      'browser_close',
+      'browser_fill',
+      'browser_hover',
+      'browser_open',
+      'browser_press',
+      'browser_scroll',
+      'browser_select',
+      'browser_snapshot',
+      'browser_type',
+      'scrape',
+      'search',
     ]);
     for (const t of tools) {
       expect((t.inputSchema as { required?: string[] }).required?.length).toBeGreaterThan(0);

@@ -19,10 +19,11 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
   upstream_error: 502,
   invalid_request: 400,
   not_found: 404,
+  // Пул сессий browser use временно исчерпан (см. ErrorCode в core/errors.ts)
+  // — тот же смысл, что у стандартного 429 (Too Many Requests): запрос сам
+  // по себе валиден, но прямо сейчас удовлетворить его нечем.
+  busy: 429,
   internal: 500,
-  // Как и blocked — запрос не выполнен не по вине клиента и не по вине
-  // демона, а по решению модели; тот же статус-класс, отдельный код.
-  llm_refusal: 422,
 };
 
 const scrapeSchema = z.object({
@@ -39,22 +40,25 @@ const searchSchema = z.object({
 
 const browserOpenSchema = z.object({ url: z.string().min(1) });
 
-const browserObserveSchema = z.object({
+const browserSnapshotSchema = z.object({ sessionId: z.string().min(1) });
+
+const browserElementSchema = z.object({
   sessionId: z.string().min(1),
-  instruction: z.string().min(1),
+  elementId: z.string().min(1),
 });
 
-const browserActSchema = z.object({
-  sessionId: z.string().min(1),
-  instruction: z.string().min(1),
+const browserFillSchema = browserElementSchema.extend({
+  text: z.string(),
   variables: z.record(z.string()).optional(),
 });
 
-const browserExtractSchema = z.object({
-  sessionId: z.string().min(1),
-  instruction: z.string().min(1),
-  schema: z.record(z.unknown()),
-});
+const browserTypeSchema = browserFillSchema;
+
+const browserPressSchema = browserElementSchema.extend({ key: z.string().min(1) });
+
+const browserSelectSchema = browserElementSchema.extend({ value: z.string().min(1) });
+
+const browserScrollSchema = browserElementSchema.extend({ percent: z.string().min(1) });
 
 const browserCloseSchema = z.object({ sessionId: z.string().min(1) });
 
@@ -153,22 +157,52 @@ export function createHttpServer(service: Service): FastifyInstance {
     return requireBrowserMethod(service.browserOpen, 'browserOpen')(parsed.data);
   });
 
-  app.post('/browser/observe', async (req) => {
-    const parsed = browserObserveSchema.safeParse(req.body);
+  app.post('/browser/snapshot', async (req) => {
+    const parsed = browserSnapshotSchema.safeParse(req.body);
     if (!parsed.success) throw invalidRequest(parsed);
-    return requireBrowserMethod(service.browserObserve, 'browserObserve')(parsed.data);
+    return requireBrowserMethod(service.browserSnapshot, 'browserSnapshot')(parsed.data);
   });
 
-  app.post('/browser/act', async (req) => {
-    const parsed = browserActSchema.safeParse(req.body);
+  app.post('/browser/click', async (req) => {
+    const parsed = browserElementSchema.safeParse(req.body);
     if (!parsed.success) throw invalidRequest(parsed);
-    return requireBrowserMethod(service.browserAct, 'browserAct')(parsed.data);
+    return requireBrowserMethod(service.browserClick, 'browserClick')(parsed.data);
   });
 
-  app.post('/browser/extract', async (req) => {
-    const parsed = browserExtractSchema.safeParse(req.body);
+  app.post('/browser/hover', async (req) => {
+    const parsed = browserElementSchema.safeParse(req.body);
     if (!parsed.success) throw invalidRequest(parsed);
-    return requireBrowserMethod(service.browserExtract, 'browserExtract')(parsed.data);
+    return requireBrowserMethod(service.browserHover, 'browserHover')(parsed.data);
+  });
+
+  app.post('/browser/fill', async (req) => {
+    const parsed = browserFillSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserFill, 'browserFill')(parsed.data);
+  });
+
+  app.post('/browser/type', async (req) => {
+    const parsed = browserTypeSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserType, 'browserType')(parsed.data);
+  });
+
+  app.post('/browser/press', async (req) => {
+    const parsed = browserPressSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserPress, 'browserPress')(parsed.data);
+  });
+
+  app.post('/browser/select', async (req) => {
+    const parsed = browserSelectSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserSelect, 'browserSelect')(parsed.data);
+  });
+
+  app.post('/browser/scroll', async (req) => {
+    const parsed = browserScrollSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserScroll, 'browserScroll')(parsed.data);
   });
 
   app.post('/browser/close', async (req) => {

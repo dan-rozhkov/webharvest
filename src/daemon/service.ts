@@ -14,11 +14,15 @@ import { truncateMarkdown, type ScrapePayload } from '../core/format.js';
 import { createSessionPool, type BrowserSession } from '../core/session-pool.js';
 import { captureSnapshot } from '../core/a11y/capture.js';
 import { diffOutlines } from '../core/a11y/diff.js';
+import { redactSecrets, redactOutlineSecrets } from '../core/a11y/format.js';
 import type { A11ySnapshot } from '../core/a11y/types.js';
-import { executeAction } from '../core/actions.js';
-import { createLlmClient } from '../core/llm/client.js';
-import { observe, planAct, planActStepTwo, extract, type Variables } from '../core/inference.js';
-import type { ObservedElement } from '../core/llm/schemas.js';
+import {
+  executeAction,
+  substituteVariables,
+  type ActionRequest,
+  type SupportedAction,
+  type Variables,
+} from '../core/actions.js';
 import type { Config } from './config.js';
 
 export interface BrowserOpenResult {
@@ -26,13 +30,14 @@ export interface BrowserOpenResult {
   outline: string;
 }
 
-export interface BrowserObserveResult {
-  elements: ObservedElement[];
+export interface BrowserSnapshotResult {
+  outline: string;
 }
 
-export interface BrowserActResult {
-  performed: boolean;
-  description: string;
+/** Общая форма ответа каждого действия: агенту важно только то, что
+ *  изменилось на странице (диф outline до/после) — сам факт исполнения
+ *  подтверждается уже тем, что вызов не бросил исключение. */
+export interface BrowserActionResult {
   changed: string;
 }
 
@@ -48,17 +53,28 @@ export interface Service {
   // isBrowserRunning выше: существующие тестовые заглушки Service (например,
   // test/daemon/http.test.ts) не обязаны их реализовывать.
   browserOpen?(args: { url: string }): Promise<BrowserOpenResult>;
-  browserObserve?(args: { sessionId: string; instruction: string }): Promise<BrowserObserveResult>;
-  browserAct?(args: {
+  /** Свежий outline той же страницы — без выполнения действия. Нужен, чтобы
+   *  агент мог посмотреть на текущее состояние страницы (например, после
+   *  того как сам открыл её или после навигации, которую не отследить
+   *  дифом), не открывая сессию заново. */
+  browserSnapshot?(args: { sessionId: string }): Promise<BrowserSnapshotResult>;
+  browserClick?(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult>;
+  browserHover?(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult>;
+  browserFill?(args: {
     sessionId: string;
-    instruction: string;
+    elementId: string;
+    text: string;
     variables?: Variables;
-  }): Promise<BrowserActResult>;
-  browserExtract?(args: {
+  }): Promise<BrowserActionResult>;
+  browserType?(args: {
     sessionId: string;
-    instruction: string;
-    schema: Record<string, unknown>;
-  }): Promise<unknown>;
+    elementId: string;
+    text: string;
+    variables?: Variables;
+  }): Promise<BrowserActionResult>;
+  browserPress?(args: { sessionId: string; elementId: string; key: string }): Promise<BrowserActionResult>;
+  browserSelect?(args: { sessionId: string; elementId: string; value: string }): Promise<BrowserActionResult>;
+  browserScroll?(args: { sessionId: string; elementId: string; percent: string }): Promise<BrowserActionResult>;
   browserClose?(args: { sessionId: string }): Promise<void>;
 }
 
@@ -157,6 +173,73 @@ export async function assertSessionUrlSafePure(
   }
 }
 
+/**
+ * Копит переданные variables в секретах сессии (см. JSDoc BrowserSession.
+ * secrets) вместо того, чтобы держать их только локально в одном вызове
+ * действия — иначе следующее действие/снапшот на той же сессии не знали бы,
+ * что редактировать. Вызывается в performAction до захвата любого снапшота:
+ * даже снапшот "before" самого этого вызова должен прийти уже вычищенным от
+ * значений, подставленных предыдущими действиями на этой же странице.
+ * Отдельная экспортируемая функция (как assertUrlIsSafe/
+ * assertSessionUrlSafePure выше) — чтобы накопление секретов по сессии можно
+ * было проверить юнит-тестом на голой Map, без реального браузера.
+ *
+ * Добавляет значение в МНОЖЕСТВО значений этого имени, а не перезаписывает
+ * его: агент вправе переиспользовать одно и то же имя переменной в двух
+ * разных вызовах с разными значениями (например, `%token%` сперва в одно
+ * поле, потом в другое) — `Map<string, string>.set()` затирал бы значение
+ * первого вызова, и оно, всё ещё живущее в DOM того первого поля, переставало
+ * бы редактироваться из следующего снапшота. См. JSDoc `BrowserSession.
+ * secrets` в session-pool.ts.
+ */
+export function registerSecrets(session: Pick<BrowserSession, 'secrets'>, variables?: Variables): void {
+  if (!variables) return;
+  for (const [name, value] of Object.entries(variables)) {
+    let values = session.secrets.get(name);
+    if (!values) {
+      values = new Set();
+      session.secrets.set(name, values);
+    }
+    values.add(value);
+  }
+}
+
+/**
+ * Применяет redactOutlineSecrets() (a11y/format.ts) к outline снапшота — не
+ * redactSecrets(): outline имеет предсказуемую построчную структуру (адрес
+ * узла всегда стоит до ` = значение`, см. JSDoc redactOutlineSecrets), и
+ * только узкая замена внутри сегмента значения гарантированно не может
+ * задеть адреса. Снапшот без секретов на сессии возвращается как есть — тот
+ * же снапшот, без лишней аллокации; лишний проход по строке при пустой карте
+ * секретов был бы чистым накладным расходом на подавляющем большинстве
+ * вызовов (сессия без единого browser_fill/browser_type с variables).
+ */
+export function redactSnapshot(snapshot: A11ySnapshot, secrets: ReadonlyMap<string, ReadonlySet<string>>): A11ySnapshot {
+  if (secrets.size === 0) return snapshot;
+  return { ...snapshot, outline: redactOutlineSecrets(snapshot.outline, secrets) };
+}
+
+/**
+ * Редактирует секреты из текста HarvestError перед тем, как она уйдёт выше:
+ * playwright иногда эхом повторяет переданный аргумент действия в тексте
+ * исключения (например, «No option matched "<value>"» при промахе
+ * selectOptionFromDropdown) — то же место утечки, что и outline, только через
+ * текст ошибки, а не через снапшот. code/detail не трогаем: только message
+ * может содержать секрет.
+ *
+ * Использует redactSecrets() (глобальная замена по всему тексту), а не
+ * redactOutlineSecrets(): текст ошибки playwright не имеет структуры outline
+ * (никакого предсказуемого " = "), поэтому у узкой замены здесь просто нет
+ * сегмента, за который можно зацепиться — сообщение осталось бы
+ * нередактированным. Ложноположительная порча случайного текста ошибки не
+ * так опасна, как раскрытие секрета: там нет "адресов" узлов, которые можно
+ * сломать.
+ */
+export function redactHarvestError(e: HarvestError, secrets: ReadonlyMap<string, ReadonlySet<string>>): HarvestError {
+  if (secrets.size === 0) return e;
+  return new HarvestError(e.code, redactSecrets(e.message, secrets), e.detail);
+}
+
 export function createService(config: Config): Service {
   if (config.cachePath !== ':memory:') {
     mkdirSync(dirname(config.cachePath), { recursive: true });
@@ -190,7 +273,6 @@ export function createService(config: Config): Service {
   // путать с browser (browser.ts) выше — тот открывает/закрывает страницу на
   // один рендер и состояния между вызовами не хранит.
   const sessions = createSessionPool();
-  const llm = createLlmClient();
 
   /** Пауза на перерисовку после действия — без неё диф пуст на всём, что
    *  рисуется через JS. Тот же приём, что doRender в core/browser.ts. */
@@ -201,6 +283,35 @@ export function createService(config: Config): Service {
 
   async function assertSessionUrlSafe(session: BrowserSession): Promise<void> {
     await assertSessionUrlSafePure(session, config.allowPrivate, (id) => sessions.close(id));
+  }
+
+  /**
+   * captureSnapshot() ничего не знает про сессии и секреты (он работает с
+   * голой Page — так и задумано, см. JSDoc capture.ts), поэтому редактирование
+   * подставленных значений происходит здесь, сразу после захвата и ДО того,
+   * как outline попадёт куда-либо ещё: в diffOutlines() или в текст, который
+   * уходит вызывающему агенту. Один снапшот — один проход редактирования.
+   */
+  async function captureRedactedSnapshot(page: Page, session: BrowserSession): Promise<A11ySnapshot> {
+    return redactSnapshot(await captureSnapshot(page), session.secrets);
+  }
+
+  /**
+   * Оборачивает executeAction() так, чтобы и текст исключения не мог пронести
+   * подставленное значение наружу — см. JSDoc redactHarvestError выше.
+   */
+  async function executeActionSafely(
+    page: Page,
+    req: ActionRequest,
+    snapshot: A11ySnapshot,
+    session: BrowserSession,
+  ): Promise<void> {
+    try {
+      await executeAction(page, req, snapshot);
+    } catch (e) {
+      if (HarvestError.is(e)) throw redactHarvestError(e, session.secrets);
+      throw e;
+    }
   }
 
   /** Читает кэш, но никогда не даёт кэш-хиту стать хардфейлом: запись могла
@@ -331,101 +442,146 @@ export function createService(config: Config): Service {
     return out;
   }
 
+  /**
+   * Обёртка над `sessions.get(id)`, которая гарантирует парный
+   * `sessions.release(id)` (см. JSDoc release() в session-pool.ts) даже если
+   * `fn` бросает — иначе сессия осталась бы навсегда помеченной занятой и
+   * никогда не снялась бы ни по простою, ни вытеснением. Не используется в
+   * browserOpen(): там сессия создаётся уже занятой самим `sessions.open()`
+   * и либо закрывается целиком на ошибке (`sessions.close()`), либо
+   * освобождается явно перед успешным return — оба пути ниже написаны прямо,
+   * без этой обёртки, потому что на ошибке открытия сессию нужно не
+   * освободить, а закрыть.
+   */
+  async function withSession<T>(sessionId: string, fn: (session: BrowserSession) => Promise<T>): Promise<T> {
+    const session = sessions.get(sessionId);
+    try {
+      return await fn(session);
+    } finally {
+      sessions.release(session.id);
+    }
+  }
+
   async function browserOpen(args: { url: string }): Promise<BrowserOpenResult> {
     // Дёшево отбрасывает явно недопустимый адрес до открытия страницы
     // браузера — та же глубина проверки (форма + DNS), что и у scrape().
     await assertUrlIsSafe(args.url, config.allowPrivate);
 
     const session = await sessions.open(args.url);
-    // Пост-навигационная проверка: page.goto() внутри sessions.open() мог
-    // пройти по редиректу на приватный адрес уже ПОСЛЕ проверки выше, которая
-    // видела только исходный url (см. assertSessionUrlSafe). На нарушении
-    // сессия уже закрыта — снапшот снимать не пытаемся.
-    await assertSessionUrlSafe(session);
-
-    // captureSnapshot может бросить (например, пустое дерево) — раз сессия
-    // уже открыта, а вызвавшему мы её id так и не отдали, закрыть её должны
-    // мы сами, иначе живая страница останется висеть без единого владельца.
-    let snapshot: A11ySnapshot;
+    // С этой точки и до `return` сессия открыта, но её id ещё не отдан
+    // вызывающему — значит, закрыть её при любом сбое можем только мы сами,
+    // иначе страница и Chromium останутся висеть без единого владельца.
+    // assertSessionUrlSafe уже закрывает сессию сама, но только на
+    // `invalid_url` — на `network` (assertPublicHost не смог зарезолвить
+    // хост, см. url.ts) она намеренно оставляет сессию живой и просто
+    // пробрасывает ошибку выше (см. её JSDoc). Раньше эта ошибка улетала
+    // отсюда наверх без закрытия сессии — сама сессия оставалась висеть
+    // осиротевшей, потому что id так и не был возвращён. try/catch здесь
+    // закрывает сессию на любое исключение из обеих проверок; двойное
+    // закрытие безопасно — sessions.close()/drop() идемпотентны (просто
+    // не находят сессию в map повторно).
     try {
-      snapshot = await captureSnapshot(session.page);
+      // Пост-навигационная проверка: page.goto() внутри sessions.open() мог
+      // пройти по редиректу на приватный адрес уже ПОСЛЕ проверки выше,
+      // которая видела только исходный url.
+      await assertSessionUrlSafe(session);
+      // captureSnapshot может бросить (например, пустое дерево).
+      const snapshot = await captureRedactedSnapshot(session.page, session);
+      // Сессия создаётся занятой (session-pool.ts, open()) — снимаем это
+      // здесь, на единственном успешном пути: вызывающему уже отдан id, и с
+      // этого момента sweep/eviction снова вправе её тронуть, как и любую
+      // другую свободную сессию.
+      sessions.release(session.id);
+      return { sessionId: session.id, outline: snapshot.outline };
     } catch (e) {
       await sessions.close(session.id);
       throw e;
     }
-    return { sessionId: session.id, outline: snapshot.outline };
   }
 
-  async function browserObserve(args: {
-    sessionId: string;
-    instruction: string;
-  }): Promise<BrowserObserveResult> {
-    const session = sessions.get(args.sessionId);
-    await assertSessionUrlSafe(session);
-    // Пересниматься перед каждым инференсом обязательно: страница могла
-    // измениться со времени последнего снапшота (или это вообще первый вызов
-    // после browser_open на другой странице после навигации внутри act).
-    const snapshot = await captureSnapshot(session.page);
-    const elements = await observe({ llm }, { instruction: args.instruction, snapshot });
-    return { elements };
+  async function browserSnapshot(args: { sessionId: string }): Promise<BrowserSnapshotResult> {
+    return withSession(args.sessionId, async (session) => {
+      await assertSessionUrlSafe(session);
+      const snapshot = await captureRedactedSnapshot(session.page, session);
+      return { outline: snapshot.outline };
+    });
   }
 
-  async function browserAct(args: {
-    sessionId: string;
-    instruction: string;
-    variables?: Variables;
-  }): Promise<BrowserActResult> {
-    const session = sessions.get(args.sessionId);
+  /**
+   * Общий ход одного детерминированного действия: снапшот "до", подстановка
+   * variables, исполнение, пауза на перерисовку, повторная проверка адреса
+   * (действие само могло быть навигацией — клик по ссылке, отправка формы),
+   * снапшот "после", диф. Раньше это делал planAct/planActStepTwo — модель
+   * внутри демона выбирала elementId/method/arguments по инструкции; теперь
+   * их называет вызывающий агент напрямую (он же видит дерево страницы),
+   * поэтому здесь просто исполнение без планирования.
+   */
+  async function performAction(
+    session: BrowserSession,
+    method: SupportedAction,
+    elementId: string,
+    args: string[],
+    variables?: Variables,
+  ): Promise<BrowserActionResult> {
     await assertSessionUrlSafe(session);
-    const before = await captureSnapshot(session.page);
+    // До снапшота "до": значение могло попасть на страницу более ранним
+    // действием на этой же сессии, и даже "before" обязан прийти уже чистым.
+    registerSecrets(session, variables);
+    const before = await captureRedactedSnapshot(session.page, session);
 
-    const plan = await planAct({ llm }, { instruction: args.instruction, snapshot: before, variables: args.variables });
-    if (!plan) {
-      return { performed: false, description: '', changed: '' };
-    }
-
-    await executeAction(session.page, plan.first, before);
+    const req: ActionRequest = { elementId, method, arguments: substituteVariables(args, variables) };
+    await executeActionSafely(session.page, req, before, session);
     await settleAfterAction(session.page);
-    // Действие само могло быть навигацией (клик по ссылке, отправка формы) —
-    // проверяем снова, прежде чем снимать снапшот, в который попадёт то, что
-    // сейчас на странице.
     await assertSessionUrlSafe(session);
-    let after = await captureSnapshot(session.page);
+    const after = await captureRedactedSnapshot(session.page, session);
 
-    if (plan.needsSecondStep) {
-      const second = await planActStepTwo(
-        { llm },
-        {
-          originalInstruction: args.instruction,
-          previousDescription: plan.description,
-          snapshot: after,
-          variables: args.variables,
-        },
-      );
-      if (second) {
-        await executeAction(session.page, second, after);
-        await settleAfterAction(session.page);
-        await assertSessionUrlSafe(session);
-        after = await captureSnapshot(session.page);
-      }
-    }
-
-    return {
-      performed: true,
-      description: plan.description,
-      changed: diffOutlines(before.outline, after.outline),
-    };
+    return { changed: diffOutlines(before.outline, after.outline) };
   }
 
-  async function browserExtract(args: {
+  async function browserClick(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) => performAction(session, 'click', args.elementId, []));
+  }
+
+  async function browserHover(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) => performAction(session, 'hover', args.elementId, []));
+  }
+
+  async function browserFill(args: {
     sessionId: string;
-    instruction: string;
-    schema: Record<string, unknown>;
-  }): Promise<unknown> {
-    const session = sessions.get(args.sessionId);
-    await assertSessionUrlSafe(session);
-    const snapshot = await captureSnapshot(session.page);
-    return extract({ llm }, { instruction: args.instruction, snapshot, schema: args.schema });
+    elementId: string;
+    text: string;
+    variables?: Variables;
+  }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) =>
+      performAction(session, 'fill', args.elementId, [args.text], args.variables),
+    );
+  }
+
+  async function browserType(args: {
+    sessionId: string;
+    elementId: string;
+    text: string;
+    variables?: Variables;
+  }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) =>
+      performAction(session, 'type', args.elementId, [args.text], args.variables),
+    );
+  }
+
+  async function browserPress(args: { sessionId: string; elementId: string; key: string }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) => performAction(session, 'press', args.elementId, [args.key]));
+  }
+
+  async function browserSelect(args: { sessionId: string; elementId: string; value: string }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) =>
+      performAction(session, 'selectOptionFromDropdown', args.elementId, [args.value]),
+    );
+  }
+
+  async function browserScroll(args: { sessionId: string; elementId: string; percent: string }): Promise<BrowserActionResult> {
+    return withSession(args.sessionId, (session) =>
+      performAction(session, 'scrollTo', args.elementId, [args.percent]),
+    );
   }
 
   async function browserClose(args: { sessionId: string }): Promise<void> {
@@ -440,9 +596,14 @@ export function createService(config: Config): Service {
       return args.fetchContent ? withContent(results) : results;
     },
     browserOpen,
-    browserObserve,
-    browserAct,
-    browserExtract,
+    browserSnapshot,
+    browserClick,
+    browserHover,
+    browserFill,
+    browserType,
+    browserPress,
+    browserSelect,
+    browserScroll,
     browserClose,
     async shutdown() {
       clearInterval(purgeTimer);

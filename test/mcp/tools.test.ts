@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { TOOL_DEFINITIONS, handleScrape, handleSearch, handleBrowserAct } from '../../src/mcp/tools.js';
+import { TOOL_DEFINITIONS, handleScrape, handleSearch, handleBrowserClick } from '../../src/mcp/tools.js';
 import { HarvestError } from '../../src/core/errors.js';
 
 interface CallRecord {
@@ -24,7 +24,18 @@ const client = {
 describe('TOOL_DEFINITIONS', () => {
   it('объявляет scrape, search и инструменты browser use', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual([
-      'browser_act', 'browser_close', 'browser_extract', 'browser_observe', 'browser_open', 'scrape', 'search',
+      'browser_click',
+      'browser_close',
+      'browser_fill',
+      'browser_hover',
+      'browser_open',
+      'browser_press',
+      'browser_scroll',
+      'browser_select',
+      'browser_snapshot',
+      'browser_type',
+      'scrape',
+      'search',
     ]);
   });
 
@@ -55,13 +66,6 @@ describe('handleScrape', () => {
     expect(out).not.toContain('at Object.');
   });
 
-  it('llm_refusal объясняется отдельно от blocked — без намёка на антибот', async () => {
-    const failing = { ...client, scrape: async () => { throw new HarvestError('llm_refusal', 'модель отказалась'); } };
-    const out = await handleScrape(failing as never, { url: 'https://a/' });
-    expect(out).not.toContain('закрывает антибот');
-    expect(out).toContain('модель сама отказалась');
-  });
-
   it('передаёт дефолтные значения: refresh=false, includeLinks=false', async () => {
     await handleScrape(client as never, { url: 'https://a/' });
     expect(calls.scrapeArgs).toEqual({ url: 'https://a/', refresh: false, includeLinks: false });
@@ -73,12 +77,24 @@ describe('handleScrape', () => {
   });
 });
 
-describe('handleBrowserAct', () => {
-  it('llm_refusal на browser_act тоже не выдаётся за антибот-блок', async () => {
-    const failing = { browserAct: async () => { throw new HarvestError('llm_refusal', 'модель отказалась выполнять действие'); } };
-    const out = await handleBrowserAct(failing as never, { sessionId: 's1', instruction: 'сделай что-то' });
-    expect(out).not.toContain('закрывает антибот');
-    expect(out).toContain('модель сама отказалась');
+describe('handleBrowserClick', () => {
+  it('форматирует диф изменений на странице', async () => {
+    const client = { browserClick: async () => ({ changed: '[0-2] textbox: новое значение' }) };
+    const out = await handleBrowserClick(client as never, { sessionId: 's1', elementId: '0-1' });
+    expect(out).toContain('новое значение');
+  });
+
+  it('пустой диф формулируется как отсутствие видимых изменений', async () => {
+    const client = { browserClick: async () => ({ changed: '' }) };
+    const out = await handleBrowserClick(client as never, { sessionId: 's1', elementId: '0-1' });
+    expect(out).toContain('Видимых изменений на странице нет');
+  });
+
+  it('not_found на неизвестной сессии — читаемая ошибка, а не стектрейс', async () => {
+    const client = { browserClick: async () => { throw new HarvestError('not_found', 'Сессия s1 не найдена'); } };
+    const out = await handleBrowserClick(client as never, { sessionId: 's1', elementId: '0-1' });
+    expect(out).toContain('не найдена');
+    expect(out).not.toContain('at Object.');
   });
 });
 

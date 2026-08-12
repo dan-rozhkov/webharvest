@@ -10,6 +10,8 @@ const stubService = (overrides: Partial<Service> = {}): Service => ({
   ...overrides,
 });
 
+const NOT_FOUND = new HarvestError('not_found', 'Сессия s1 не найдена — возможно, она уже закрыта');
+
 describe('HTTP API', () => {
   it('GET /health отвечает ok', async () => {
     const app = createHttpServer(stubService());
@@ -155,6 +157,156 @@ describe('HTTP API', () => {
     // with "error" as a *string* ("Bad Request") — asserting it's an object
     // here pins that we replaced it, not merely wrapped it.
     expect(typeof res.json().error).toBe('object');
+    await app.close();
+  });
+});
+
+describe('HTTP API: browser-use эндпоинты', () => {
+  it('POST /browser/open требует url', async () => {
+    const app = createHttpServer(stubService({
+      browserOpen: async ({ url }) => ({ sessionId: 's1', outline: `[0-1] RootWebArea: ${url}` }),
+    }));
+    const res = await app.inject({ method: 'POST', url: '/browser/open', payload: { url: 'https://a/' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ sessionId: 's1' });
+    await app.close();
+  });
+
+  it('POST /browser/open без url отвечает 400 invalid_request', async () => {
+    const app = createHttpServer(stubService());
+    const res = await app.inject({ method: 'POST', url: '/browser/open', payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_request');
+    await app.close();
+  });
+
+  it('POST /browser/snapshot возвращает outline', async () => {
+    const app = createHttpServer(stubService({
+      browserSnapshot: async () => ({ outline: '[0-1] RootWebArea: T' }),
+    }));
+    const res = await app.inject({ method: 'POST', url: '/browser/snapshot', payload: { sessionId: 's1' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ outline: '[0-1] RootWebArea: T' });
+    await app.close();
+  });
+
+  it('POST /browser/click возвращает диф изменений', async () => {
+    const app = createHttpServer(stubService({
+      browserClick: async (args) => ({ changed: `clicked ${args.elementId}` }),
+    }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/click',
+      payload: { sessionId: 's1', elementId: '0-2' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ changed: 'clicked 0-2' });
+    await app.close();
+  });
+
+  it('POST /browser/click без elementId отвечает 400 invalid_request', async () => {
+    const app = createHttpServer(stubService({ browserClick: async () => ({ changed: '' }) }));
+    const res = await app.inject({ method: 'POST', url: '/browser/click', payload: { sessionId: 's1' } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_request');
+    await app.close();
+  });
+
+  it('POST /browser/fill принимает text и variables', async () => {
+    let seen: unknown;
+    const app = createHttpServer(stubService({
+      browserFill: async (args) => { seen = args; return { changed: 'ok' }; },
+    }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/fill',
+      payload: { sessionId: 's1', elementId: '0-2', text: '%token%', variables: { token: 'secret' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(seen).toEqual({ sessionId: 's1', elementId: '0-2', text: '%token%', variables: { token: 'secret' } });
+    await app.close();
+  });
+
+  it('POST /browser/type принимает text без variables', async () => {
+    const app = createHttpServer(stubService({ browserType: async () => ({ changed: 'ok' }) }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/type',
+      payload: { sessionId: 's1', elementId: '0-2', text: 'hello' },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('POST /browser/press требует key', async () => {
+    const app = createHttpServer(stubService({ browserPress: async () => ({ changed: '' }) }));
+    const missing = await app.inject({ method: 'POST', url: '/browser/press', payload: { sessionId: 's1', elementId: '0-2' } });
+    expect(missing.statusCode).toBe(400);
+
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/browser/press',
+      payload: { sessionId: 's1', elementId: '0-2', key: 'Enter' },
+    });
+    expect(ok.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('POST /browser/select требует value', async () => {
+    const app = createHttpServer(stubService({ browserSelect: async () => ({ changed: '' }) }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/select',
+      payload: { sessionId: 's1', elementId: '0-2', value: 'Опция' },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('POST /browser/scroll требует percent', async () => {
+    const app = createHttpServer(stubService({ browserScroll: async () => ({ changed: '' }) }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/scroll',
+      payload: { sessionId: 's1', elementId: '0-2', percent: '50' },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it('POST /browser/close закрывает сессию и отвечает пустым объектом', async () => {
+    let closed: unknown;
+    const app = createHttpServer(stubService({ browserClose: async (args) => { closed = args; } }));
+    const res = await app.inject({ method: 'POST', url: '/browser/close', payload: { sessionId: 's1' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({});
+    expect(closed).toEqual({ sessionId: 's1' });
+    await app.close();
+  });
+
+  it('неизвестная сессия на действии — 404 not_found', async () => {
+    const app = createHttpServer(stubService({
+      browserClick: async () => { throw NOT_FOUND; },
+    }));
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/click',
+      payload: { sessionId: 's1', elementId: '0-2' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('not_found');
+    await app.close();
+  });
+
+  it('метод, не реализованный сервисом, отвечает internal (баг проводки, а не "сессия не найдена")', async () => {
+    const app = createHttpServer(stubService());
+    const res = await app.inject({
+      method: 'POST',
+      url: '/browser/click',
+      payload: { sessionId: 's1', elementId: '0-2' },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.json().error.code).toBe('internal');
     await app.close();
   });
 });
