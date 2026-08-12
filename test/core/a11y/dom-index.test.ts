@@ -81,6 +81,48 @@ describe('a11y/dom-index: getDomTreeWithFallback', () => {
     const root = await getDomTreeWithFallback(session);
     expect(root.children?.[0]?.nodeName).toBe('HTML');
   });
+
+  it('не путает пространства nodeId и backendNodeId при дедупликации узлов', async () => {
+    // У SPAN нет nodeId, зато backendNodeId=5. У DIV — другой, несвязанный
+    // узел с nodeId=5. Число 5 одно и то же, но пространства разные: если
+    // дедупликация схлопывает их в один ключ, обрезанная ветка SPAN
+    // молча останется недогидратированной.
+    const session = fakeSession((method, params) => {
+      if (method === 'DOM.getDocument') {
+        if (params.depth === -1) return new Error('CBOR: stack limit exceeded');
+        return {
+          root: {
+            nodeName: '#document',
+            nodeId: 1,
+            backendNodeId: 1,
+            childNodeCount: 2,
+            children: [
+              { nodeName: 'SPAN', backendNodeId: 5, childNodeCount: 1, children: [] },
+              { nodeName: 'DIV', nodeId: 5, backendNodeId: 50, childNodeCount: 0, children: [] },
+            ],
+          },
+        };
+      }
+      if (method === 'DOM.describeNode') {
+        if (params.backendNodeId === 5) {
+          return {
+            node: {
+              nodeName: 'SPAN',
+              backendNodeId: 5,
+              childNodeCount: 1,
+              children: [{ nodeName: 'A', backendNodeId: 6 }],
+            },
+          };
+        }
+        throw new Error(`неожиданный describeNode для ${JSON.stringify(params)}`);
+      }
+      throw new Error(`неожиданный вызов ${method}`);
+    });
+
+    const root = await getDomTreeWithFallback(session);
+    const span = root.children?.find((c) => c.nodeName === 'SPAN');
+    expect(span?.children?.[0]?.nodeName).toBe('A');
+  });
 });
 
 describe('a11y/dom-index: buildDomMaps', () => {

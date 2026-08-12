@@ -82,11 +82,14 @@ function traversalTargets(node: DomNode): DomNode[] {
 /** Дособирает обрезанные ветки, спускаясь по той же лестнице глубин. */
 async function hydrate(session: CdpSender, root: DomNode): Promise<void> {
   const stack: DomNode[] = [root];
-  const seen = new Set<number>();
+  // Пространства nodeId и backendNodeId независимы: их счётчики никак не
+  // согласованы, поэтому один и тот же number может относиться к двум разным
+  // узлам. Префикс "n:"/"b:" не даёт им столкнуться в одном Set.
+  const seen = new Set<string>();
 
   while (stack.length) {
     const node = stack.pop()!;
-    const key = node.nodeId ?? node.backendNodeId;
+    const key = node.nodeId !== undefined ? `n:${node.nodeId}` : node.backendNodeId !== undefined ? `b:${node.backendNodeId}` : undefined;
     if (key !== undefined) {
       if (seen.has(key)) continue;
       seen.add(key);
