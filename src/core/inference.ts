@@ -195,7 +195,19 @@ function resolveLinks(value: unknown, urlMap: Record<string, string>): unknown {
   if (Array.isArray(value)) return value.map((v) => resolveLinks(v, urlMap));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) out[k] = resolveLinks(v, urlMap);
+    // defineProperty всегда создаёт собственное свойство на `out`, даже для
+    // ключа "__proto__" — в отличие от `out[k] = v`, который для этого имени
+    // трактуется как присваивание [[Prototype]] и подменяет прототип объекта
+    // (prototype pollution). Модель отдаёт сырой JSON от пользовательской
+    // схемы, поэтому такой ключ в принципе может прилететь.
+    for (const [k, v] of Object.entries(value)) {
+      Object.defineProperty(out, k, {
+        value: resolveLinks(v, urlMap),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
     return out;
   }
   return value;

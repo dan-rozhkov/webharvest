@@ -53,6 +53,21 @@ describe('inference: extract', () => {
     expect(out).toEqual({ code: '0-1' });
   });
 
+  it('не даёт ключу __proto__ подменить прототип результата', async () => {
+    // JSON.parse сам не создаёт опасного "__proto__" (он делает обычное
+    // собственное свойство), но наивная сборка `out[k] = v` в resolveLinks
+    // трактует присваивание по этому имени как запись в [[Prototype]].
+    const reply = JSON.parse('{"__proto__":{"polluted":"yes"},"title":"Новости"}') as unknown;
+    const llm = fakeLlm(reply);
+    const out = (await extract({ llm }, { instruction: 'заголовок', snapshot: SNAPSHOT, schema: SCHEMA })) as Record<
+      string,
+      unknown
+    >;
+
+    expect((Object.getPrototypeOf(out) as Record<string, unknown>).polluted).toBeUndefined();
+    expect(out.title).toBe('Новости');
+  });
+
   it('кладёт дерево в промпт', async () => {
     const llm = fakeLlm({ links: [] });
     await extract({ llm }, { instruction: 'ссылки', snapshot: SNAPSHOT, schema: SCHEMA });
