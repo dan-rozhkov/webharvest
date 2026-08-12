@@ -10,6 +10,7 @@
  */
 import type { Page } from 'playwright';
 import type { A11ySnapshot } from './types.js';
+import { HarvestError } from '../errors.js';
 import { encodeNodeId, formatTreeLine } from './format.js';
 import { buildHierarchicalTree, decorateRoles, extractUrlFromAxNode, type RawAxNode } from './tree.js';
 import { buildDomMaps, type CdpSender } from './dom-index.js';
@@ -25,12 +26,34 @@ export async function captureSnapshot(page: Page): Promise<A11ySnapshot> {
 
   try {
     // Домены включаем до любых запросов: getFullAXTree на выключенном домене
-    // отдаёт пустое дерево, а не ошибку, и это молча ломает весь снапшот.
+    // отдаёт пустое дерево, а не ошибку, и это молча ломает весь снапшот. Ошибку
+    // самого enable не глушим — запоминаем и, если следом дерево окажется
+    // пустым, называем её как вероятную причину.
+    let accessibilityEnableError: unknown;
     await session.send('DOM.enable').catch(() => {});
-    await session.send('Accessibility.enable').catch(() => {});
+    await session.send('Accessibility.enable').catch((e) => {
+      accessibilityEnableError = e;
+    });
 
     const { tagNameMap, xpathMap, scrollableMap } = await buildDomMaps(session, MAIN_FRAME_ORDINAL);
     const { nodes } = await session.send<{ nodes: RawAxNode[] }>('Accessibility.getFullAXTree');
+
+    // Пустое дерево — не валидный снапшот: страница без единого accessibility-узла
+    // не бывает (даже пустой <body> отдаёт хотя бы RootWebArea). Молча вернуть
+    // пустой outline значит спрятать именно ту silent failure, от которой должен
+    // был защищать enable выше.
+    if (nodes.length === 0) {
+      const reason =
+        accessibilityEnableError instanceof Error
+          ? accessibilityEnableError.message
+          : accessibilityEnableError !== undefined
+            ? String(accessibilityEnableError)
+            : 'причина неизвестна — Accessibility.enable прошёл успешно';
+      throw new HarvestError(
+        'internal',
+        `Accessibility.getFullAXTree вернул пустое дерево: ${reason}`,
+      );
+    }
 
     const encode = (backendNodeId: number) => encodeNodeId(MAIN_FRAME_ORDINAL, backendNodeId);
 
