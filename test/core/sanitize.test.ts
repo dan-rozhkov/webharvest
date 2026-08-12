@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { sanitizeDocument } from '../../src/core/sanitize.js';
+import { sanitizeDocument, stripInvisibleFromText } from '../../src/core/sanitize.js';
 
 const PAGE = 'https://example.com/page';
 
@@ -206,5 +206,25 @@ describe('sanitize: невалидный baseUrl не отключает тре�
     const html = doc.body.innerHTML;
     expect(html).toContain('id=1');
     expect(html).not.toContain('utm_source');
+  });
+});
+
+describe('sanitize: глифы иконочных шрифтов', () => {
+  it('выкидывает символы из Private Use Area', () => {
+    // U+F09A — типичная позиция глифа Font Awesome. В тексте это мусорный
+    // токен: без шрифта он не рендерится, а модели стоит целый токен.
+    const html = clean('<p>\uF09AЧитать дальше</p>');
+    expect(html).not.toContain('\uF09A');
+    expect(html).toContain('Читать дальше');
+  });
+
+  it('не трогает обычные символы вне PUA', () => {
+    const html = clean('<p>💡 идея — тире</p>');
+    expect(html).toContain('💡');
+    expect(html).toContain('—');
+  });
+
+  it('чистит PUA и в отдельной строке, не только в DOM', () => {
+    expect(stripInvisibleFromText('\uF09AЗаголовок')).toBe('Заголовок');
   });
 });

@@ -33,7 +33,11 @@ function replaceImages(doc: Document): void {
 }
 
 /**
- * Невидимые символы: soft hyphen, zero-width space, word joiner, BOM.
+ * Невидимые символы: soft hyphen, zero-width space, word joiner, BOM, плюс
+ * диапазон Private Use Area (U+E000–U+F8FF). В PUA сидят глифы иконочных
+ * шрифтов — Font Awesome, Material Icons и подобных. Без своего шрифта такой
+ * символ не рендерится ничем осмысленным, но занимает токен и ломает поиск
+ * по тексту.
  * ZWNJ (U+200C) и ZWJ (U+200D) сюда сознательно не входят: это не типографский
  * мусор, а значимые символы — ZWNJ разделяет словоформы в персидском, арабском
  * и индийских письменностях, а ZWJ склеивает emoji-последовательности (семья,
@@ -41,7 +45,7 @@ function replaceImages(doc: Document): void {
  */
 // Только escape-последовательности: литералы этих символов невидимы в исходнике
 // и теряются при любом копировании.
-const INVISIBLE = /[\u00AD\u200B\u2060\uFEFF]/g;
+const INVISIBLE = /[\u00AD\u200B\u2060\uFEFF\uE000-\uF8FF]/g;
 
 /**
  * Та же чистка невидимых символов, но для отдельной строки, а не DOM —
