@@ -253,3 +253,9 @@ Tests are excluded from the live-test suite unless you run `npm run test:live`.
 ## License
 
 [Check LICENSE file]
+
+## Attribution
+
+webharvest переиспользует код из [Stagehand](https://github.com/browserbase/stagehand)
+(MIT, © Browserbase, Inc.) — слой представления accessibility-дерева и контракт
+промптов act/observe/extract. Подробности в [NOTICE](./NOTICE).
