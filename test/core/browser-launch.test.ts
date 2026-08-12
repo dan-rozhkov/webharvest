@@ -78,4 +78,28 @@ describe('launchBrowser', () => {
     await expect(launchBrowser({ headless: true })).rejects.toThrow('newContext failed');
     expect(closeBrowser).toHaveBeenCalledTimes(1);
   });
+  it('persistent-режим: сбой applyStealth закрывает контекст (не оставляет осиротевший Chromium)', async () => {
+    // Regression для Important-замечания ревью: launchPersistentContext уже
+    // поднял процесс Chromium, addInitScript упал — контекст обязан быть
+    // закрыт, иначе процесс с заблокированным userDataDir (SingletonLock)
+    // живёт до смерти демона, а фолбэк того же профиля маскирует ошибку.
+    const closeContext = vi.fn(async () => {});
+    const failingCtx = {
+      addInitScript: vi.fn(async () => { throw new Error('addInitScript failed'); }),
+      browser: vi.fn(() => ({})),
+      close: closeContext,
+    };
+    vi.mocked(chromium.launchPersistentContext).mockImplementationOnce(async () => failingCtx as never);
+    const dir = tmpProfile();
+    await expect(launchBrowser({ headless: true, profileDir: dir })).rejects.toThrow('addInitScript failed');
+    expect(closeContext).toHaveBeenCalledTimes(1);
+  });
+  it('передаёт stealth-аргументы в launch', async () => {
+    await launchBrowser({ headless: true });
+    expect(vi.mocked(chromium.launch).mock.calls[0]![0]).toEqual(
+      expect.objectContaining({
+        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
+      }),
+    );
+  });
 });

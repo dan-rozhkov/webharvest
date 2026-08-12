@@ -42,20 +42,35 @@ const CONTEXT_OPTS = (opts: LaunchOptions) => ({
 export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowser> {
   const channels: (BrowserChannel | undefined)[] =
     opts.channel === 'chrome' ? ['chrome', undefined] : [undefined];
-  const persistent = Boolean(opts.profileDir);
+  const profileDir = opts.profileDir;
 
   let lastError: unknown = null;
   for (const channel of channels) {
     try {
-      if (persistent) {
-        mkdirSync(opts.profileDir!, { recursive: true });
-        const context = await chromium.launchPersistentContext(opts.profileDir!, {
+      if (profileDir) {
+        mkdirSync(profileDir, { recursive: true });
+        const context = await chromium.launchPersistentContext(profileDir, {
           headless: opts.headless,
           ...(channel ? { channel } : {}),
           args: STEALTH_ARGS,
           ...CONTEXT_OPTS(opts),
         });
-        await applyStealth(context);
+        try {
+          await applyStealth(context);
+        } catch (e) {
+          // Зеркально неpersistent-ветке ниже: launchPersistentContext уже
+          // поднял процесс Chromium, и если addInitScript упал, контекст
+          // нельзя оставить без владельца — иначе осиротевший Chromium с
+          // заблокированным userDataDir (SingletonLock) живёт до смерти
+          // демона, а фолбэк-запуск того же профиля падает на локале и
+          // маскирует исходную ошибку. В persistent-режиме владелец
+          // процесса — контекст: context.close() закроет и браузер.
+          await context.close().catch(() => {});
+          throw e;
+        }
+        // context.browser() типизирован как Browser | null, но для
+        // persistent-контекста всегда возвращает браузер (проверено на
+        // playwright 1.62): контекст без браузера существовать не может.
         return { browser: context.browser()!, context, usedChannel: channel ?? 'chromium', persistent: true };
       }
       const browser = await chromium.launch({
