@@ -34,10 +34,12 @@ function textOf(res: Awaited<ReturnType<Client['callTool']>>): string {
 }
 
 describe('MCP server (real Server + real Client, in-memory transport)', () => {
-  it('tools/list отдаёт ровно scrape и search с непустыми схемами', async () => {
+  it('tools/list отдаёт scrape, search и инструменты browser use с непустыми схемами', async () => {
     const mcpClient = await connect(stubClient());
     const { tools } = await mcpClient.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['scrape', 'search']);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'browser_act', 'browser_close', 'browser_extract', 'browser_observe', 'browser_open', 'scrape', 'search',
+    ]);
     for (const t of tools) {
       expect((t.inputSchema as { required?: string[] }).required?.length).toBeGreaterThan(0);
     }

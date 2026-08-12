@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
+import type { Page } from 'playwright';
 import { Cache, scrapeKey } from '../core/cache.js';
 import { DomainQueue } from '../core/politeness.js';
 import { createBrowserPool } from '../core/browser.js';
@@ -10,7 +11,30 @@ import { HarvestError } from '../core/errors.js';
 import { createSearch, createSearxngProvider, createBraveProvider } from '../core/search/index.js';
 import type { SearchProvider, SearchResult } from '../core/search/types.js';
 import { truncateMarkdown, type ScrapePayload } from '../core/format.js';
+import { createSessionPool } from '../core/session-pool.js';
+import { captureSnapshot } from '../core/a11y/capture.js';
+import { diffOutlines } from '../core/a11y/diff.js';
+import type { A11ySnapshot } from '../core/a11y/types.js';
+import { executeAction } from '../core/actions.js';
+import { createLlmClient } from '../core/llm/client.js';
+import { observe, planAct, planActStepTwo, extract, type Variables } from '../core/inference.js';
+import type { ObservedElement } from '../core/llm/schemas.js';
 import type { Config } from './config.js';
+
+export interface BrowserOpenResult {
+  sessionId: string;
+  outline: string;
+}
+
+export interface BrowserObserveResult {
+  elements: ObservedElement[];
+}
+
+export interface BrowserActResult {
+  performed: boolean;
+  description: string;
+  changed: string;
+}
 
 export interface Service {
   scrape(args: { url: string; includeLinks?: boolean; refresh?: boolean }): Promise<ScrapePayload>;
@@ -20,6 +44,22 @@ export interface Service {
    *  Used by GET /health for an honest readiness signal. Optional so stubs
    *  in tests aren't forced to implement it. */
   isBrowserRunning?(): boolean;
+  // Browser-use методы объявлены опциональными по той же причине, что и
+  // isBrowserRunning выше: существующие тестовые заглушки Service (например,
+  // test/daemon/http.test.ts) не обязаны их реализовывать.
+  browserOpen?(args: { url: string }): Promise<BrowserOpenResult>;
+  browserObserve?(args: { sessionId: string; instruction: string }): Promise<BrowserObserveResult>;
+  browserAct?(args: {
+    sessionId: string;
+    instruction: string;
+    variables?: Variables;
+  }): Promise<BrowserActResult>;
+  browserExtract?(args: {
+    sessionId: string;
+    instruction: string;
+    schema: Record<string, unknown>;
+  }): Promise<unknown>;
+  browserClose?(args: { sessionId: string }): Promise<void>;
 }
 
 const FETCH_CONTENT_MAX = 5;
@@ -75,6 +115,24 @@ export function createService(config: Config): Service {
   if (config.searxngUrl) providers.push(createSearxngProvider(config.searxngUrl));
   if (config.braveApiKey) providers.push(createBraveProvider(config.braveApiKey));
   const search = createSearch(providers);
+
+  // Browser use: отдельный пул долгоживущих страниц (session-pool.ts), не
+  // путать с browser (browser.ts) выше — тот открывает/закрывает страницу на
+  // один рендер и состояния между вызовами не хранит.
+  const sessions = createSessionPool();
+  const llm = createLlmClient();
+  // Снапшот последнего захвата страницы — нужен act/extract для резолва
+  // адресов элементов. Живёт рядом с сессией, но не в самом SessionPool
+  // (его контракт этой задачей не трогаем): отдельная карта той же
+  // продолжительности жизни, вычищаемая по sessionId вместе с сессией.
+  const snapshots = new Map<string, A11ySnapshot>();
+
+  /** Пауза на перерисовку после действия — без неё диф пуст на всём, что
+   *  рисуется через JS. Тот же приём, что doRender в core/browser.ts. */
+  async function settleAfterAction(page: Page): Promise<void> {
+    await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
+    await page.waitForTimeout(300);
+  }
 
   /** Читает кэш, но никогда не даёт кэш-хиту стать хардфейлом: запись могла
    *  быть повреждена на диске (не-JSON, обрезанный файл) ИЛИ быть валидным
@@ -204,6 +262,108 @@ export function createService(config: Config): Service {
     return out;
   }
 
+  async function browserOpen(args: { url: string }): Promise<BrowserOpenResult> {
+    // Тот же SSRF-барьер, что и у scrape() выше: без него browser_open даёт
+    // модели произвольный переход на приватные/локальные адреса в обход
+    // защиты, которую фетчер уже применяет к обычному чтению страниц.
+    if (config.allowPrivate) {
+      try {
+        new URL(args.url);
+      } catch {
+        throw new HarvestError('invalid_url', `Не похоже на URL: ${args.url}`);
+      }
+    } else {
+      assertAllowedUrl(args.url);
+    }
+
+    const session = await sessions.open(args.url);
+    // captureSnapshot может бросить (например, пустое дерево) — раз сессия
+    // уже открыта, а вызвавшему мы её id так и не отдали, закрыть её должны
+    // мы сами, иначе живая страница останется висеть без единого владельца.
+    let snapshot: A11ySnapshot;
+    try {
+      snapshot = await captureSnapshot(session.page);
+    } catch (e) {
+      await sessions.close(session.id);
+      throw e;
+    }
+    snapshots.set(session.id, snapshot);
+    return { sessionId: session.id, outline: snapshot.outline };
+  }
+
+  async function browserObserve(args: {
+    sessionId: string;
+    instruction: string;
+  }): Promise<BrowserObserveResult> {
+    const session = sessions.get(args.sessionId);
+    // Пересниматься перед каждым инференсом обязательно: страница могла
+    // измениться со времени последнего снапшота (или это вообще первый вызов
+    // после browser_open на другой странице после навигации внутри act).
+    const snapshot = await captureSnapshot(session.page);
+    snapshots.set(session.id, snapshot);
+    const elements = await observe({ llm }, { instruction: args.instruction, snapshot });
+    return { elements };
+  }
+
+  async function browserAct(args: {
+    sessionId: string;
+    instruction: string;
+    variables?: Variables;
+  }): Promise<BrowserActResult> {
+    const session = sessions.get(args.sessionId);
+    const before = await captureSnapshot(session.page);
+
+    const plan = await planAct({ llm }, { instruction: args.instruction, snapshot: before, variables: args.variables });
+    if (!plan) {
+      snapshots.set(session.id, before);
+      return { performed: false, description: '', changed: '' };
+    }
+
+    await executeAction(session.page, plan.first, before);
+    await settleAfterAction(session.page);
+    let after = await captureSnapshot(session.page);
+
+    if (plan.needsSecondStep) {
+      const second = await planActStepTwo(
+        { llm },
+        {
+          originalInstruction: args.instruction,
+          previousDescription: plan.description,
+          snapshot: after,
+          variables: args.variables,
+        },
+      );
+      if (second) {
+        await executeAction(session.page, second, after);
+        await settleAfterAction(session.page);
+        after = await captureSnapshot(session.page);
+      }
+    }
+
+    snapshots.set(session.id, after);
+    return {
+      performed: true,
+      description: plan.description,
+      changed: diffOutlines(before.outline, after.outline),
+    };
+  }
+
+  async function browserExtract(args: {
+    sessionId: string;
+    instruction: string;
+    schema: Record<string, unknown>;
+  }): Promise<unknown> {
+    const session = sessions.get(args.sessionId);
+    const snapshot = await captureSnapshot(session.page);
+    snapshots.set(session.id, snapshot);
+    return extract({ llm }, { instruction: args.instruction, snapshot, schema: args.schema });
+  }
+
+  async function browserClose(args: { sessionId: string }): Promise<void> {
+    await sessions.close(args.sessionId);
+    snapshots.delete(args.sessionId);
+  }
+
   return {
     scrape,
     async search(args) {
@@ -211,9 +371,15 @@ export function createService(config: Config): Service {
       const results = await search.search(args.query, limit);
       return args.fetchContent ? withContent(results) : results;
     },
+    browserOpen,
+    browserObserve,
+    browserAct,
+    browserExtract,
+    browserClose,
     async shutdown() {
       clearInterval(purgeTimer);
       await browser.shutdown();
+      await sessions.shutdown();
       cache.close();
     },
     isBrowserRunning() {

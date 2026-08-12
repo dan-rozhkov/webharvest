@@ -34,6 +34,49 @@ const searchSchema = z.object({
   fetchContent: z.boolean().optional(),
 });
 
+const browserOpenSchema = z.object({ url: z.string().min(1) });
+
+const browserObserveSchema = z.object({
+  sessionId: z.string().min(1),
+  instruction: z.string().min(1),
+});
+
+const browserActSchema = z.object({
+  sessionId: z.string().min(1),
+  instruction: z.string().min(1),
+  variables: z.record(z.string()).optional(),
+});
+
+const browserExtractSchema = z.object({
+  sessionId: z.string().min(1),
+  instruction: z.string().min(1),
+  schema: z.record(z.unknown()),
+});
+
+const browserCloseSchema = z.object({ sessionId: z.string().min(1) });
+
+/** Тот же способ, что и у /scrape выше: назвать поле, которое реально не
+ *  прошло валидацию, а не всегда одно и то же захардкоженное имя. */
+function invalidRequest(parsed: z.SafeParseReturnType<unknown, unknown>): HarvestError {
+  const issue = (parsed as z.SafeParseError<unknown>).error.issues[0];
+  const field = issue?.path.join('.') || 'body';
+  return new HarvestError(
+    'invalid_request',
+    `Некорректное поле "${field}": ${issue?.message ?? 'не прошло валидацию'}`,
+  );
+}
+
+/** Browser-use сервис опционален в интерфейсе Service (см. service.ts) —
+ *  тестовые заглушки Service его не реализуют. На настоящем демоне метод
+ *  всегда есть; not_found здесь означает баг проводки, а не "сессия не
+ *  найдена" (эта ошибка приходит из самого сервиса другим HarvestError). */
+function requireBrowserMethod<T>(method: T | undefined, name: string): T {
+  if (!method) {
+    throw new HarvestError('internal', `Метод ${name} не реализован в сервисе демона`);
+  }
+  return method;
+}
+
 /** Calls service.isBrowserRunning() defensively: a broken status probe must
  *  degrade /health to "unknown" (false), not blow up the whole endpoint —
  *  readiness reporting shouldn't itself be a new way to go down. */
@@ -99,6 +142,40 @@ export function createHttpServer(service: Service): FastifyInstance {
     // without a breaking change. One wrapper key now is cheaper than a
     // renegotiation with every client later.
     return { results };
+  });
+
+  app.post('/browser/open', async (req) => {
+    const parsed = browserOpenSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserOpen, 'browserOpen')(parsed.data);
+  });
+
+  app.post('/browser/observe', async (req) => {
+    const parsed = browserObserveSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserObserve, 'browserObserve')(parsed.data);
+  });
+
+  app.post('/browser/act', async (req) => {
+    const parsed = browserActSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserAct, 'browserAct')(parsed.data);
+  });
+
+  app.post('/browser/extract', async (req) => {
+    const parsed = browserExtractSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserExtract, 'browserExtract')(parsed.data);
+  });
+
+  app.post('/browser/close', async (req) => {
+    const parsed = browserCloseSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    await requireBrowserMethod(service.browserClose, 'browserClose')(parsed.data);
+    // POST/scrape и /search всегда отвечают объектом — пустой body ломает
+    // JSON.parse на стороне DaemonClient (см. mcp/client.ts), поэтому здесь
+    // тоже отдаём объект, а не undefined.
+    return {};
   });
 
   // Routes above only ever throw HarvestError (validation) or let whatever

@@ -4,7 +4,16 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createDaemonClient, type DaemonClient } from './client.js';
-import { TOOL_DEFINITIONS, handleScrape, handleSearch } from './tools.js';
+import {
+  TOOL_DEFINITIONS,
+  handleScrape,
+  handleSearch,
+  handleBrowserOpen,
+  handleBrowserObserve,
+  handleBrowserAct,
+  handleBrowserExtract,
+  handleBrowserClose,
+} from './tools.js';
 
 /**
  * Builds the MCP server and wires up tool dispatch, but does not connect any
@@ -28,6 +37,11 @@ export function createMcpServer(client: DaemonClient): Server {
     const text =
       req.params.name === 'scrape' ? await handleScrape(client, args as never)
       : req.params.name === 'search' ? await handleSearch(client, args as never)
+      : req.params.name === 'browser_open' ? await handleBrowserOpen(client, args as never)
+      : req.params.name === 'browser_observe' ? await handleBrowserObserve(client, args as never)
+      : req.params.name === 'browser_act' ? await handleBrowserAct(client, args as never)
+      : req.params.name === 'browser_extract' ? await handleBrowserExtract(client, args as never)
+      : req.params.name === 'browser_close' ? await handleBrowserClose(client, args as never)
       : `Неизвестный инструмент: ${req.params.name}`;
     return { content: [{ type: 'text', text }] };
   });

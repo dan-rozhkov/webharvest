@@ -2,6 +2,22 @@ import { request } from 'undici';
 import { HarvestError, type ErrorCode } from '../core/errors.js';
 import type { ScrapePayload } from '../core/format.js';
 import type { SearchResult } from '../core/search/types.js';
+import type { ObservedElement } from '../core/llm/schemas.js';
+
+export interface BrowserOpenResult {
+  sessionId: string;
+  outline: string;
+}
+
+export interface BrowserObserveResult {
+  elements: ObservedElement[];
+}
+
+export interface BrowserActResult {
+  performed: boolean;
+  description: string;
+  changed: string;
+}
 
 interface ErrorBody { error?: { code?: ErrorCode; message?: string; detail?: Record<string, unknown> } }
 
@@ -56,6 +72,11 @@ export function createDaemonClient(baseUrl: string) {
   return {
     scrape: (body: unknown) => call<ScrapePayload>('/scrape', body),
     search: async (body: unknown) => (await call<{ results: SearchResult[] }>('/search', body)).results,
+    browserOpen: (body: unknown) => call<BrowserOpenResult>('/browser/open', body),
+    browserObserve: (body: unknown) => call<BrowserObserveResult>('/browser/observe', body),
+    browserAct: (body: unknown) => call<BrowserActResult>('/browser/act', body),
+    browserExtract: (body: unknown) => call<unknown>('/browser/extract', body),
+    browserClose: async (body: unknown) => { await call<Record<string, never>>('/browser/close', body); },
   };
 }
 

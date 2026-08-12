@@ -34,6 +34,77 @@ export const TOOL_DEFINITIONS = [
       required: ['query'],
     },
   },
+  {
+    name: 'browser_open',
+    description:
+      'Открывает страницу в живом браузере и возвращает id сессии и дерево страницы. ' +
+      'Страница остаётся открытой между вызовами. Используй, когда со страницей надо ' +
+      'взаимодействовать, а не просто прочитать её — для чтения есть scrape.',
+    inputSchema: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Полный URL страницы' } },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'browser_observe',
+    description:
+      'Находит на открытой странице элементы по описанию и возвращает их адреса и ' +
+      'возможные действия, ничего не делая. Используй, чтобы осмотреться перед действием.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        instruction: { type: 'string', description: 'Что искать, обычными словами' },
+      },
+      required: ['sessionId', 'instruction'],
+    },
+  },
+  {
+    name: 'browser_act',
+    description:
+      'Выполняет одно действие на открытой странице по описанию: клик, ввод текста, ' +
+      'выбор в списке, прокрутка. Возвращает, что изменилось на странице. ' +
+      'Используй по одному действию за раз.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        instruction: { type: 'string', description: 'Одно действие, обычными словами' },
+        variables: {
+          type: 'object',
+          description:
+            'Значения для подстановки: в инструкции упоминай их как %имя%. ' +
+            'Сами значения модели не показываются — так передаются пароли и токены.',
+        },
+      },
+      required: ['sessionId', 'instruction'],
+    },
+  },
+  {
+    name: 'browser_extract',
+    description:
+      'Достаёт данные с открытой страницы в заданной JSON-схеме. ' +
+      'Используй, когда нужен структурированный результат, а не текст страницы.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        instruction: { type: 'string', description: 'Что извлечь' },
+        schema: { type: 'object', description: 'JSON Schema желаемого результата' },
+      },
+      required: ['sessionId', 'instruction', 'schema'],
+    },
+  },
+  {
+    name: 'browser_close',
+    description: 'Закрывает сессию браузера. Вызывай, когда работа со страницей закончена.',
+    inputSchema: {
+      type: 'object',
+      properties: { sessionId: { type: 'string', description: 'id сессии из browser_open' } },
+      required: ['sessionId'],
+    },
+  },
 ] as const;
 
 function explain(e: unknown): string {
@@ -41,6 +112,7 @@ function explain(e: unknown): string {
     const hint =
       e.code === 'blocked' ? ' Попробуй другой источник — эту страницу закрывает антибот.'
       : e.code === 'timeout' ? ' Можно повторить попытку.'
+      : e.code === 'not_found' ? ' Открой страницу заново через browser_open.'
       : '';
     const msg = e.message.endsWith('.') ? e.message : `${e.message}.`;
     return `Не удалось: ${msg}${hint}`;
@@ -75,6 +147,71 @@ export async function handleSearch(
       fetchContent: args.fetchContent ?? false,
     });
     return formatSearch(args.query, results);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserOpen(
+  client: DaemonClient,
+  args: { url: string },
+): Promise<string> {
+  try {
+    const r = await client.browserOpen(args);
+    return `Сессия: ${r.sessionId}\n\nДерево страницы:\n${r.outline}`;
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserObserve(
+  client: DaemonClient,
+  args: { sessionId: string; instruction: string },
+): Promise<string> {
+  try {
+    const r = await client.browserObserve(args);
+    if (r.elements.length === 0) return 'Подходящих элементов не нашлось.';
+    return r.elements
+      .map((e) => `[${e.elementId}] ${e.description} — ${e.method}`)
+      .join('\n');
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserAct(
+  client: DaemonClient,
+  args: { sessionId: string; instruction: string; variables?: Record<string, string> },
+): Promise<string> {
+  try {
+    const r = await client.browserAct(args);
+    if (!r.performed) return 'Подходящего элемента для этого действия на странице нет.';
+    return r.changed
+      ? `Сделано: ${r.description}\n\nНа странице появилось:\n${r.changed}`
+      : `Сделано: ${r.description}\n\nВидимых изменений на странице нет.`;
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserExtract(
+  client: DaemonClient,
+  args: { sessionId: string; instruction: string; schema: Record<string, unknown> },
+): Promise<string> {
+  try {
+    return JSON.stringify(await client.browserExtract(args), null, 2);
+  } catch (e) {
+    return explain(e);
+  }
+}
+
+export async function handleBrowserClose(
+  client: DaemonClient,
+  args: { sessionId: string },
+): Promise<string> {
+  try {
+    await client.browserClose(args);
+    return 'Сессия закрыта.';
   } catch (e) {
     return explain(e);
   }

@@ -22,8 +22,10 @@ const client = {
 };
 
 describe('TOOL_DEFINITIONS', () => {
-  it('объявляет ровно два инструмента', () => {
-    expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual(['scrape', 'search']);
+  it('объявляет scrape, search и инструменты browser use', () => {
+    expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual([
+      'browser_act', 'browser_close', 'browser_extract', 'browser_observe', 'browser_open', 'scrape', 'search',
+    ]);
   });
 
   it('у каждого есть непустое описание и схема с required', () => {
