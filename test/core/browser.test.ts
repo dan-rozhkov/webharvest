@@ -361,4 +361,22 @@ describe('BrowserPool', () => {
     });
     expect(callCount).toBe(2); // Tried twice, then gave up
   });
+
+  it('дожидается разрешения имитированного Turnstile и возвращает контент', async () => {
+    const base = await serve(() => ({
+      body: `<html><body>
+        <div id="cf-turnstile" style="width:300px;height:65px"></div>
+        <div id="root"></div>
+        <script>
+          setTimeout(() => {
+            document.getElementById('cf-turnstile').remove();
+            document.getElementById('root').textContent = 'контент после челленджа';
+          }, 2000);
+        </script>
+      </body></html>`,
+    }));
+    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    const r = await pool.render(base + '/', { timeoutMs: 15_000 });
+    expect(r.html).toContain('контент после челленджа');
+  });
 });

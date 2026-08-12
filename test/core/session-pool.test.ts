@@ -10,6 +10,12 @@ const fakePage = () => ({
   goto: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
   url: () => 'about:blank',
+  // open() после goto зовёт waitForChallengeResolution (challenge.ts) —
+  // замокаем его зависимости: без челлендж-маркеров и с нейтральным
+  // заголовком ожидание завершается мгновенно, ничего не ожидая.
+  locator: vi.fn(() => ({ count: vi.fn(async () => 0) })),
+  title: vi.fn(async () => 'Test Page'),
+  waitForTimeout: vi.fn(async () => {}),
 });
 
 const fakeContext = () => ({

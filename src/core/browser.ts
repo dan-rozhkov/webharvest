@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
+import { waitForChallengeResolution } from './challenge.js';
 
 export interface RenderResult {
   html: string;
@@ -180,6 +181,7 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   }
 
   async function doRender(url: string, timeout: number, onPage: (p: Page) => void): Promise<RenderResult> {
+    const renderStartedAt = Date.now();
     let gen: number;
     let page: Page;
     try {
@@ -197,6 +199,15 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
       // well below `timeout` regardless of the caller's budget, so it
       // can't itself eat into the headroom the outer deadline relies on.
       await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
+      // Cloudflare/Turnstile: если страница показывает челлендж, даём ему
+      // шанс решиться (авто-решение или клик по чекбоксу), не выходя за
+      // бюджет вызывающего. Бюджет — остаток от timeout после навигации.
+      const challengeBudget = Math.max(0, Math.min(20_000, timeout - (Date.now() - renderStartedAt)));
+      if (challengeBudget > 0) {
+        await waitForChallengeResolution(page, { timeoutMs: challengeBudget });
+        // После разрешения страница могла уйти на редирект — подождём сеть ещё раз.
+        await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
+      }
       await page.waitForTimeout(300);
 
       // Retry page.content() if it fails with navigation race condition.

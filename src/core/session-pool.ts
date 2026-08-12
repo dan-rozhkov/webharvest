@@ -9,6 +9,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
+import { waitForChallengeResolution } from './challenge.js';
 
 export interface BrowserSession {
   id: string;
@@ -219,6 +220,9 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
       const page = await ctx.newPage();
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        // Turnstile/Cloudflare: не отдавать агенту страницу-челлендж. Ждём
+        // авто-решения или кликаем чекбокс; бюджет отдельный от goto.
+        await waitForChallengeResolution(page, { timeoutMs: 20_000 });
       } catch (e) {
         await page.close().catch(() => {});
         const msg = e instanceof Error ? e.message : String(e);
