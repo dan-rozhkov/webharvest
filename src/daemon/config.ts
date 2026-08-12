@@ -10,6 +10,12 @@ export interface Config {
   searxngUrl: string | null;
   braveApiKey: string | null;
   idleTimeoutMs: number;
+  /** Канал запуска браузера: bundled chromium или системный Google Chrome
+   *  (с фолбэком на bundled, если Chrome не установлен — см. launchBrowser). */
+  browserChannel: 'chromium' | 'chrome';
+  /** Persistent user-data-dir браузера (cookies переживают рестарты демона);
+   *  null — обычный временный профиль на каждый запуск. */
+  browserProfileDir: string | null;
   /** Только для тестов: пускает приватные/локальные адреса мимо SSRF-защиты.
    *  Никогда не читается из config.json — только из явных overrides (кода вызова),
    *  чтобы файл на диске не мог тихо открыть демон для SSRF. */
@@ -24,6 +30,8 @@ const DEFAULTS: Config = {
   searxngUrl: 'http://127.0.0.1:8080',
   braveApiKey: null,
   idleTimeoutMs: 5 * 60_000,
+  browserChannel: 'chromium',
+  browserProfileDir: null,
   allowPrivate: false,
 };
 
@@ -80,6 +88,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (process.env.BRAVE_API_KEY) fromEnv.braveApiKey = process.env.BRAVE_API_KEY;
   if (process.env.WEBHARVEST_PORT) fromEnv.port = parsePort(process.env.WEBHARVEST_PORT);
   if (process.env.WEBHARVEST_SEARXNG_URL) fromEnv.searxngUrl = process.env.WEBHARVEST_SEARXNG_URL;
+  if (process.env.WEBHARVEST_BROWSER_CHANNEL) {
+    const c = process.env.WEBHARVEST_BROWSER_CHANNEL;
+    if (c !== 'chromium' && c !== 'chrome') {
+      throw new Error(`WEBHARVEST_BROWSER_CHANNEL должен быть "chromium" или "chrome", получено: "${c}"`);
+    }
+    fromEnv.browserChannel = c;
+  }
+  if (process.env.WEBHARVEST_BROWSER_PROFILE_DIR) fromEnv.browserProfileDir = process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
 
   const merged = { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
 

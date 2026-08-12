@@ -6,9 +6,9 @@
  * страница живёт до явного закрытия, вытеснения по LRU или простоя, потому что
  * агент делает над ней много последовательных шагов.
  */
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
-import { applyStealth, STEALTH_ARGS, STEALTH_UA } from './stealth.js';
+import { launchBrowser, type BrowserChannel } from './browser-launch.js';
 
 export interface BrowserSession {
   id: string;
@@ -45,6 +45,10 @@ export interface SessionPoolOptions {
   /** Потолок одновременно открытых страниц. По умолчанию 5. */
   maxSessions?: number;
   headless?: boolean;
+  /** Системный Google Chrome вместо bundled chromium (см. launchBrowser). */
+  channel?: BrowserChannel;
+  /** Persistent user-data-dir: cookies/сессии переживают рестарты пула. */
+  profileDir?: string;
 }
 
 export interface SessionPool {
@@ -107,6 +111,10 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
   let launching: Promise<BrowserContext> | null = null;
+  // Persistent-режим (profileDir): браузером владеет контекст, и shutdown()
+  // обязан не звать b.close() повторно после c.close() — см. teardown() в
+  // browser.ts с тем же флагом.
+  let persistent = false;
   // Map сохраняет порядок вставки, но нам нужен порядок обращений — поэтому
   // вытесняем по seq (см. nextSeq выше), а не по позиции в Map.
   const sessions = new Map<string, InternalSession>();
@@ -127,38 +135,19 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
     if (context) return context;
     if (launching) return launching;
     launching = (async () => {
-      const b = await chromium.launch({
+      // launchBrowser сам закрывает браузер, если newContext/applyStealth
+      // упали (и пробует следующий канал при channel 'chrome'), поэтому при
+      // ошибке здесь никакого осиротевшего Chromium не остаётся — просто
+      // пробрасываем её дальше, контекст и browser не присвоены.
+      const launched = await launchBrowser({
         headless,
-        args: STEALTH_ARGS,
+        channel: opts.channel,
+        profileDir: opts.profileDir,
       });
-      try {
-        const c = await b.newContext({
-          userAgent: STEALTH_UA,
-          viewport: { width: 1440, height: 900 },
-          locale: 'en-US',
-        });
-        // Stealth применяется сразу после успешного newContext — до присвоения
-        // context/browser, чтобы init-скрипт гарантированно висел в контексте,
-        // как только тот становится доступен пулу (и при сбое закрытие `b` в
-        // catch ниже осталось единственным путём наружу).
-        await applyStealth(c);
-        browser = b;
-        context = c;
-        return c;
-      } catch (e) {
-        // b.newContext() уже запустило настоящий процесс Chromium в `b`
-        // (chromium.launch() выше успешно отработало) — если его не закрыть
-        // здесь, ссылка на него теряется вместе с этим catch (ни `browser`,
-        // ни `context` не были присвоены), и процесс живёт до перезапуска
-        // демона: осиротевший Chromium, который никто и никогда не закроет.
-        // Следующий open() при этом просто попробует ensureContext() заново
-        // и запустит ЕЩЁ один — раньше это и происходило. Ошибку самого
-        // close() глотаем: если процесс уже не поднялся толком, закрыть его
-        // всё равно надо попытаться, но вторичный сбой здесь не важнее
-        // исходного, который летит вызывающему через rethrow ниже.
-        await b.close().catch(() => {});
-        throw e;
-      }
+      browser = launched.browser;
+      context = launched.context;
+      persistent = launched.persistent;
+      return launched.context;
     })();
     try {
       return await launching;
@@ -290,7 +279,9 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
       context = null;
       browser = null;
       await c?.close().catch(() => {});
-      await b?.close().catch(() => {});
+      // В persistent-режиме браузер принадлежит контексту и закрылся вместе
+      // с ним; повторный b.close() кинул бы ошибку — пропускаем его.
+      if (!persistent) await b?.close().catch(() => {});
     },
 
     count: () => sessions.size,

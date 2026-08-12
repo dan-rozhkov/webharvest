@@ -6,6 +6,8 @@ import { join } from 'node:path';
 describe('loadConfig', () => {
   const originalHome = process.env.HOME;
   const originalPort = process.env.WEBHARVEST_PORT;
+  const originalBrowserChannel = process.env.WEBHARVEST_BROWSER_CHANNEL;
+  const originalBrowserProfileDir = process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
   let fakeHome: string;
 
   beforeEach(() => {
@@ -18,6 +20,10 @@ describe('loadConfig', () => {
     process.env.HOME = originalHome;
     if (originalPort === undefined) delete process.env.WEBHARVEST_PORT;
     else process.env.WEBHARVEST_PORT = originalPort;
+    if (originalBrowserChannel === undefined) delete process.env.WEBHARVEST_BROWSER_CHANNEL;
+    else process.env.WEBHARVEST_BROWSER_CHANNEL = originalBrowserChannel;
+    if (originalBrowserProfileDir === undefined) delete process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
+    else process.env.WEBHARVEST_BROWSER_PROFILE_DIR = originalBrowserProfileDir;
     vi.resetModules();
   });
 
@@ -91,5 +97,31 @@ describe('loadConfig', () => {
     process.env.WEBHARVEST_PORT = '0';
     const { loadConfig } = await import('../../src/daemon/config.js');
     expect(() => loadConfig()).toThrow(/WEBHARVEST_PORT/);
+  });
+
+  it('browserChannel по умолчанию "chromium" (bundled), browserProfileDir — null', async () => {
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    const cfg = loadConfig();
+    expect(cfg.browserChannel).toBe('chromium');
+    expect(cfg.browserProfileDir).toBeNull();
+  });
+
+  it('WEBHARVEST_BROWSER_CHANNEL=chrome задаёт канал системного Chrome', async () => {
+    process.env.WEBHARVEST_BROWSER_CHANNEL = 'chrome';
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig().browserChannel).toBe('chrome');
+  });
+
+  it('WEBHARVEST_BROWSER_CHANNEL с мусором падает громко, называя переменную и значение', async () => {
+    process.env.WEBHARVEST_BROWSER_CHANNEL = 'bogus';
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(() => loadConfig()).toThrow(/WEBHARVEST_BROWSER_CHANNEL/);
+    expect(() => loadConfig()).toThrow(/bogus/);
+  });
+
+  it('WEBHARVEST_BROWSER_PROFILE_DIR задаёт каталог persistent-профиля', async () => {
+    process.env.WEBHARVEST_BROWSER_PROFILE_DIR = '/tmp/xyz';
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig().browserProfileDir).toBe('/tmp/xyz');
   });
 });

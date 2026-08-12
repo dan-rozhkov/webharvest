@@ -1,6 +1,6 @@
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
-import { applyStealth, STEALTH_ARGS, STEALTH_UA } from './stealth.js';
+import { launchBrowser, type BrowserChannel } from './browser-launch.js';
 
 export interface RenderResult {
   html: string;
@@ -22,6 +22,10 @@ export interface BrowserPoolOptions {
    *  real browser is otherwise unbounded, unlike the HTTP path, and can send
    *  tens of MB through jsdom/Readability/Defuddle and into SQLite. */
   maxBytes?: number;
+  /** Системный Google Chrome вместо bundled chromium (см. launchBrowser). */
+  channel?: BrowserChannel;
+  /** Persistent user-data-dir: cookies/сессии переживают рестарты пула. */
+  profileDir?: string;
 }
 
 const CLOSED_MESSAGE = 'Пул браузеров остановлен, рендер отклонён';
@@ -73,36 +77,39 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   // instance it acquired, so a shutdown racing a render never lets that
   // render tear down (or touch the idle timer of) a *newer* instance.
   let generation = 0;
+  // Persistent-режим (profileDir) означает, что браузером владеет контекст:
+  // launchPersistentContext сам запускает процесс и закрывает его вместе с
+  // контекстом, поэтому teardown() обязан НЕ звать b.close() повторно — тот
+  // бросит ошибку «браузер уже закрыт». Флаг запоминается при каждом
+  // успешном launchBrowser (idleClose может перезапустить пул с теми же
+  // опциями — значение стабильно, но переприсваивается на всякий случай).
+  let persistent = false;
   const waiting: (() => void)[] = [];
   // Terminal flag set by the public shutdown(). Distinct from the idle
   // auto-close, which must still allow a later render() to relaunch.
   let closed = false;
 
   // Serializes concurrent launches so two overlapping renders that both see
-  // context === null don't each start their own `chromium.launch()`.
+  // context === null don't each start their own launchBrowser().
   let launching: Promise<{ ctx: BrowserContext; gen: number }> | null = null;
 
   async function ensure(): Promise<{ ctx: BrowserContext; gen: number }> {
     if (context) return { ctx: context, gen: generation };
     if (launching) return launching;
     launching = (async () => {
-      const b = await chromium.launch({
+      const launched = await launchBrowser({
         headless,
-        args: STEALTH_ARGS,
-      });
-      const c = await b.newContext({
-        userAgent: STEALTH_UA,
-        viewport: { width: 1440, height: 900 },
-        locale: 'en-US',
+        channel: opts.channel,
+        profileDir: opts.profileDir,
         timezoneId: 'Europe/Nicosia',
         deviceScaleFactor: 2,
         extraHTTPHeaders: { 'accept-language': 'en-US,en;q=0.9,ru;q=0.8' },
       });
-      await applyStealth(c);
-      browser = b;
-      context = c;
+      browser = launched.browser;
+      context = launched.context;
+      persistent = launched.persistent;
       generation += 1;
-      return { ctx: c, gen: generation };
+      return { ctx: launched.context, gen: generation };
     })();
     try {
       return await launching;
@@ -147,7 +154,9 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     context = null;
     browser = null;
     await c?.close().catch(() => {});
-    await b?.close().catch(() => {});
+    // В persistent-режиме браузер принадлежит контексту и закрылся вместе с
+    // ним; повторный b.close() кинул бы ошибку — пропускаем его.
+    if (!persistent) await b?.close().catch(() => {});
   }
 
   /** Idle-triggered close: non-terminal, a later render() may relaunch. */

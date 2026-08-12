@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Page } from 'playwright';
 import { Cache, scrapeKey } from '../core/cache.js';
@@ -256,7 +256,16 @@ export function createService(config: Config): Service {
   const purgeTimer = setInterval(() => cache.purgeExpired(), 60 * 60_000);
   purgeTimer.unref();
 
-  const browser = createBrowserPool({ idleTimeoutMs: config.idleTimeoutMs });
+  // Браузер для рендера. Оба пула делят канал запуска и корень профилей из
+  // конфига, но подкаталоги у каждого свои: у session-pool живые сессии
+  // browser use (cookies, localStorage), у browser — только то, что захочет
+  // пережить рестарт сам рендер. Раздельные userDataDir, чтобы закрытие
+  // одного пула (например, по простою) не сносило сессии другого.
+  const browser = createBrowserPool({
+    idleTimeoutMs: config.idleTimeoutMs,
+    channel: config.browserChannel,
+    profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'scrape') : undefined,
+  });
   const fetcher = createFetcher({
     queue: new DomainQueue(),
     browser,
@@ -272,7 +281,11 @@ export function createService(config: Config): Service {
   // Browser use: отдельный пул долгоживущих страниц (session-pool.ts), не
   // путать с browser (browser.ts) выше — тот открывает/закрывает страницу на
   // один рендер и состояния между вызовами не хранит.
-  const sessions = createSessionPool();
+  const sessions = createSessionPool({
+    idleTimeoutMs: config.idleTimeoutMs,
+    channel: config.browserChannel,
+    profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'sessions') : undefined,
+  });
 
   /** Пауза на перерисовку после действия — без неё диф пуст на всём, что
    *  рисуется через JS. Тот же приём, что doRender в core/browser.ts. */
