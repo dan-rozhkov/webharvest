@@ -32,13 +32,36 @@ export interface ActionRequest {
   arguments: string[];
 }
 
-/** Действие без аргумента там, где он обязателен, — почти всегда галлюцинация модели. */
+/**
+ * Действие без аргумента там, где он обязателен, — почти всегда галлюцинация
+ * модели. Пустая строка, в отличие от отсутствующего аргумента, — законное
+ * значение (`fill('')` — обычный способ очистить поле), поэтому здесь она
+ * не отвергается: методы, для которых пустая строка бессмысленна, проверяют
+ * это сами через `requireNonEmptyArg`.
+ */
 function requireArg(req: ActionRequest): string {
   const arg = req.arguments[0];
-  if (arg === undefined || arg === '') {
+  if (arg === undefined) {
     throw new HarvestError(
-      'not_found',
+      'invalid_request',
       `Метод ${req.method} требует аргумент, но он не передан для элемента ${req.elementId}`,
+    );
+  }
+  return arg;
+}
+
+/**
+ * Как `requireArg`, но для методов, где пустая строка ничего не значит:
+ * `press('')` — нет такой клавиши, `selectOptionFromDropdown('')` — нет
+ * опции с пустой подписью. Модель, приславшая пустой аргумент сюда, ошиблась
+ * так же, как если бы не прислала его вовсе.
+ */
+function requireNonEmptyArg(req: ActionRequest): string {
+  const arg = requireArg(req);
+  if (arg === '') {
+    throw new HarvestError(
+      'invalid_request',
+      `Метод ${req.method} требует непустой аргумент для элемента ${req.elementId}`,
     );
   }
   return arg;
@@ -82,21 +105,24 @@ export async function executeAction(
         return;
 
       case 'press':
-        await el.press(requireArg(req));
+        await el.press(requireNonEmptyArg(req));
         return;
 
       case 'selectOptionFromDropdown':
         // Работает только с нативным <select>. Кастомные дропдауны модель
         // обязана раскрывать кликом (двухшаговый сценарий) — см. промпт act.
-        await el.selectOption({ label: requireArg(req) });
+        await el.selectOption({ label: requireNonEmptyArg(req) });
         return;
 
       case 'scrollTo': {
         // Модель отдаёт долю страницы в процентах: «пролистай до половины».
-        const raw = requireArg(req).replace('%', '').trim();
+        // Здесь нужен именно requireNonEmptyArg, а не requireArg: `Number('')`
+        // равен 0, а не NaN, так что пустой аргумент, пропущенный дальше,
+        // незаметно проскочил бы как «0%» вместо явной ошибки.
+        const raw = requireNonEmptyArg(req).replace('%', '').trim();
         const percent = Number(raw);
         if (!Number.isFinite(percent)) {
-          throw new HarvestError('not_found', `scrollTo ожидает проценты, получено «${raw}»`);
+          throw new HarvestError('invalid_request', `scrollTo ожидает проценты, получено «${raw}»`);
         }
         const ratio = Math.min(100, Math.max(0, percent)) / 100;
         await el.evaluate((node, r) => {
@@ -119,8 +145,14 @@ export async function executeAction(
         `Действие ${req.method} над ${req.elementId} не завершилось: ${msg}`,
       );
     }
+    // Всё остальное — не проблема сети: перехваченный клик, отвалившийся от
+    // документа узел, несуществующая опция дропдауна и т. п. — это модель
+    // попросила страницу о том, чего та сделать не может. `network` здесь
+    // сбивал бы с толку: агент решил бы, что дело в соединении, и повторил
+    // тот же вызов вместо того, чтобы перечитать снапшот или поправить
+    // аргумент.
     throw new HarvestError(
-      'network',
+      'invalid_request',
       `Действие ${req.method} над ${req.elementId} не удалось: ${msg}`,
     );
   } finally {
