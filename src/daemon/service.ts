@@ -6,12 +6,12 @@ import { Cache, scrapeKey } from '../core/cache.js';
 import { DomainQueue } from '../core/politeness.js';
 import { createBrowserPool } from '../core/browser.js';
 import { createFetcher, DomainHints } from '../core/fetcher.js';
-import { assertAllowedUrl } from '../core/url.js';
+import { assertAllowedUrl, assertPublicHost } from '../core/url.js';
 import { HarvestError } from '../core/errors.js';
 import { createSearch, createSearxngProvider, createBraveProvider } from '../core/search/index.js';
 import type { SearchProvider, SearchResult } from '../core/search/types.js';
 import { truncateMarkdown, type ScrapePayload } from '../core/format.js';
-import { createSessionPool } from '../core/session-pool.js';
+import { createSessionPool, type BrowserSession } from '../core/session-pool.js';
 import { captureSnapshot } from '../core/a11y/capture.js';
 import { diffOutlines } from '../core/a11y/diff.js';
 import type { A11ySnapshot } from '../core/a11y/types.js';
@@ -87,6 +87,64 @@ const cachedPayloadSchema = z.object({
 // render an honest "truncated" notice instead of silently stopping mid-word.
 const SEARCH_CONTENT_MAX_CHARS = 8000;
 
+/**
+ * Тот же барьер, что `fetcher.ts` называет `validate()`: синтаксическая
+ * проверка формы (`assertAllowedUrl`) плюс DNS-резолв и проверка адресов
+ * (`assertPublicHost`) — вместе они и есть полная защита от SSRF, которую
+ * `scrape()` в итоге получает через фетчер. `allowPrivate` — тот же выход
+ * только для тестов, что и у фетчера: приватные адреса пропускаются мимо
+ * обеих проверок, остаётся только валидность самого URL.
+ *
+ * Используется дважды для browser use: один раз на входном URL перед
+ * открытием сессии (дёшево отбрасывает явно недопустимый адрес до траты
+ * страницы браузера) и один раз на текущем `page.url()` после каждой
+ * навигации — `page.goto()`/переход по ссылке следуют редиректам (HTTP и
+ * JS) без ревалидации, так что урл, прошедший первую проверку, может
+ * увести уже открытую сессию на приватный адрес чуть позже.
+ */
+export async function assertUrlIsSafe(url: string, allowPrivate: boolean): Promise<void> {
+  if (allowPrivate) {
+    try {
+      new URL(url);
+    } catch {
+      throw new HarvestError('invalid_url', `Не похоже на URL: ${url}`);
+    }
+    return;
+  }
+  const u = assertAllowedUrl(url);
+  await assertPublicHost(u.hostname);
+}
+
+/**
+ * Проверяет фактический url живой сессии перед тем, как её содержимое
+ * попадёт в снапшот (а значит — в промпт модели и в ответ инструмента).
+ * Нужна на входе в каждый browser-use метод и сразу после любого действия,
+ * которое могло инициировать навигацию (см. assertUrlIsSafe выше): страница
+ * персистентна между вызовами, поэтому проверки на входном URL в browser_open
+ * недостаточно — редирект (или клик, отправка формы, JS-навигация внутри
+ * act) может увести уже открытую страницу на приватный адрес уже после неё.
+ * При нарушении сессия закрывается сразу здесь, до возврата вызывающему —
+ * значит, содержимое приватного адреса ни разу не долетает ни до модели, ни
+ * до текста ответа инструмента.
+ *
+ * `close` вынесен параметром (а не захвачен из SessionPool напрямую), чтобы
+ * это можно было проверить юнит-тестом на фейковой странице/сессии, не
+ * поднимая настоящий браузер: единственная реальная зависимость —
+ * `session.page.url()` и функция закрытия.
+ */
+export async function assertSessionUrlSafePure(
+  session: { id: string; page: { url(): string } },
+  allowPrivate: boolean,
+  close: (id: string) => Promise<void>,
+): Promise<void> {
+  try {
+    await assertUrlIsSafe(session.page.url(), allowPrivate);
+  } catch (e) {
+    await close(session.id);
+    throw e;
+  }
+}
+
 export function createService(config: Config): Service {
   if (config.cachePath !== ':memory:') {
     mkdirSync(dirname(config.cachePath), { recursive: true });
@@ -121,17 +179,16 @@ export function createService(config: Config): Service {
   // один рендер и состояния между вызовами не хранит.
   const sessions = createSessionPool();
   const llm = createLlmClient();
-  // Снапшот последнего захвата страницы — нужен act/extract для резолва
-  // адресов элементов. Живёт рядом с сессией, но не в самом SessionPool
-  // (его контракт этой задачей не трогаем): отдельная карта той же
-  // продолжительности жизни, вычищаемая по sessionId вместе с сессией.
-  const snapshots = new Map<string, A11ySnapshot>();
 
   /** Пауза на перерисовку после действия — без неё диф пуст на всём, что
    *  рисуется через JS. Тот же приём, что doRender в core/browser.ts. */
   async function settleAfterAction(page: Page): Promise<void> {
     await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
     await page.waitForTimeout(300);
+  }
+
+  async function assertSessionUrlSafe(session: BrowserSession): Promise<void> {
+    await assertSessionUrlSafePure(session, config.allowPrivate, (id) => sessions.close(id));
   }
 
   /** Читает кэш, но никогда не даёт кэш-хиту стать хардфейлом: запись могла
@@ -263,20 +320,17 @@ export function createService(config: Config): Service {
   }
 
   async function browserOpen(args: { url: string }): Promise<BrowserOpenResult> {
-    // Тот же SSRF-барьер, что и у scrape() выше: без него browser_open даёт
-    // модели произвольный переход на приватные/локальные адреса в обход
-    // защиты, которую фетчер уже применяет к обычному чтению страниц.
-    if (config.allowPrivate) {
-      try {
-        new URL(args.url);
-      } catch {
-        throw new HarvestError('invalid_url', `Не похоже на URL: ${args.url}`);
-      }
-    } else {
-      assertAllowedUrl(args.url);
-    }
+    // Дёшево отбрасывает явно недопустимый адрес до открытия страницы
+    // браузера — та же глубина проверки (форма + DNS), что и у scrape().
+    await assertUrlIsSafe(args.url, config.allowPrivate);
 
     const session = await sessions.open(args.url);
+    // Пост-навигационная проверка: page.goto() внутри sessions.open() мог
+    // пройти по редиректу на приватный адрес уже ПОСЛЕ проверки выше, которая
+    // видела только исходный url (см. assertSessionUrlSafe). На нарушении
+    // сессия уже закрыта — снапшот снимать не пытаемся.
+    await assertSessionUrlSafe(session);
+
     // captureSnapshot может бросить (например, пустое дерево) — раз сессия
     // уже открыта, а вызвавшему мы её id так и не отдали, закрыть её должны
     // мы сами, иначе живая страница останется висеть без единого владельца.
@@ -287,7 +341,6 @@ export function createService(config: Config): Service {
       await sessions.close(session.id);
       throw e;
     }
-    snapshots.set(session.id, snapshot);
     return { sessionId: session.id, outline: snapshot.outline };
   }
 
@@ -296,11 +349,11 @@ export function createService(config: Config): Service {
     instruction: string;
   }): Promise<BrowserObserveResult> {
     const session = sessions.get(args.sessionId);
+    await assertSessionUrlSafe(session);
     // Пересниматься перед каждым инференсом обязательно: страница могла
     // измениться со времени последнего снапшота (или это вообще первый вызов
     // после browser_open на другой странице после навигации внутри act).
     const snapshot = await captureSnapshot(session.page);
-    snapshots.set(session.id, snapshot);
     const elements = await observe({ llm }, { instruction: args.instruction, snapshot });
     return { elements };
   }
@@ -311,16 +364,20 @@ export function createService(config: Config): Service {
     variables?: Variables;
   }): Promise<BrowserActResult> {
     const session = sessions.get(args.sessionId);
+    await assertSessionUrlSafe(session);
     const before = await captureSnapshot(session.page);
 
     const plan = await planAct({ llm }, { instruction: args.instruction, snapshot: before, variables: args.variables });
     if (!plan) {
-      snapshots.set(session.id, before);
       return { performed: false, description: '', changed: '' };
     }
 
     await executeAction(session.page, plan.first, before);
     await settleAfterAction(session.page);
+    // Действие само могло быть навигацией (клик по ссылке, отправка формы) —
+    // проверяем снова, прежде чем снимать снапшот, в который попадёт то, что
+    // сейчас на странице.
+    await assertSessionUrlSafe(session);
     let after = await captureSnapshot(session.page);
 
     if (plan.needsSecondStep) {
@@ -336,11 +393,11 @@ export function createService(config: Config): Service {
       if (second) {
         await executeAction(session.page, second, after);
         await settleAfterAction(session.page);
+        await assertSessionUrlSafe(session);
         after = await captureSnapshot(session.page);
       }
     }
 
-    snapshots.set(session.id, after);
     return {
       performed: true,
       description: plan.description,
@@ -354,14 +411,13 @@ export function createService(config: Config): Service {
     schema: Record<string, unknown>;
   }): Promise<unknown> {
     const session = sessions.get(args.sessionId);
+    await assertSessionUrlSafe(session);
     const snapshot = await captureSnapshot(session.page);
-    snapshots.set(session.id, snapshot);
     return extract({ llm }, { instruction: args.instruction, snapshot, schema: args.schema });
   }
 
   async function browserClose(args: { sessionId: string }): Promise<void> {
     await sessions.close(args.sessionId);
-    snapshots.delete(args.sessionId);
   }
 
   return {
