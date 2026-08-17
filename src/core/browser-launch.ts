@@ -33,10 +33,21 @@ const CONTEXT_OPTS = (opts: LaunchOptions) => ({
 });
 
 /**
+ * Признак «Chrome не установлен» в ошибке Playwright. Именно на него — и
+ * только на него — завязан фолбэк на bundled chromium: остальные причины
+ * (упавший процесс, залоченный чужим запуском userDataDir/SingletonLock,
+ * сбой applyStealth) фолбэком не лечатся, а молча подменять явно выбранный
+ * оператором канал на другой браузер — то самое тихое вырождение, которое
+ * проект не допускает (см. комментарий к parsePort в daemon/config.ts).
+ */
+const CHROME_NOT_INSTALLED = /Executable doesn't exist|is not found at|channel .* is not installed/i;
+
+/**
  * Единая точка запуска браузера для обоих пулов.
  * - channel 'chrome' → системный Google Chrome; если Playwright не находит
  *   Chrome, повторяем запуск с bundled chromium (fallback, чтобы демон
- *   работал на машинах без установленного Chrome).
+ *   работал на машинах без установленного Chrome) и пишем об этом в лог —
+ *   деградация канала не должна быть беззвучной.
  * - profileDir → launchPersistentContext (один userDataDir на процесс!).
  */
 export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowser> {
@@ -90,7 +101,14 @@ export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowse
       }
     } catch (e) {
       lastError = e;
-      // channel 'chrome' не сработал — пробуем следующий в списке (bundled chromium).
+      const msg = e instanceof Error ? e.message : String(e);
+      // Фолбэк — только на «Chrome не установлен». Любую другую ошибку
+      // отдаём вызывающему как есть: повторный запуск того же профиля в
+      // chromium её не починит, зато скроет настоящую причину.
+      if (channel !== 'chrome' || !CHROME_NOT_INSTALLED.test(msg)) break;
+      console.warn(
+        `[webharvest] системный Chrome не найден, откатываюсь на bundled chromium: ${msg}`,
+      );
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

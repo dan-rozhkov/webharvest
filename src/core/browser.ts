@@ -64,6 +64,11 @@ export async function retryPageContent(
   throw lastError ?? new Error('Failed to get page content');
 }
 
+/** Сколько миллисекунд бюджета оставляем ожиданию челленджа «на хвост»:
+ *  networkidle (≤1000) + settle (300) + page.content() после него. Должно
+ *  быть меньше запаса внешнего дедлайна в render() (timeout + 1500). */
+const CHALLENGE_TAIL_RESERVE_MS = 2_000;
+
 export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
   const idleTimeoutMs = opts.idleTimeoutMs ?? 5 * 60_000;
   const maxConcurrent = opts.maxConcurrent ?? 3;
@@ -201,8 +206,17 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
       await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
       // Cloudflare/Turnstile: если страница показывает челлендж, даём ему
       // шанс решиться (авто-решение или клик по чекбоксу), не выходя за
-      // бюджет вызывающего. Бюджет — остаток от timeout после навигации.
-      const challengeBudget = Math.max(0, Math.min(20_000, timeout - (Date.now() - renderStartedAt)));
+      // бюджет вызывающего. Бюджет — остаток от timeout после навигации,
+      // минус хвост (второй networkidle + settle + page.content() ниже).
+      // Резерв обязателен: внешняя гонка в render() отменяет рендер уже на
+      // timeout + 1500, так что ожидание челленджа «до самого timeout»
+      // гарантированно проигрывало бы дедлайну на нерешённом челлендже —
+      // и вызывающий получал бы 'timeout' вместо HTML челленджа, по
+      // которому fetcher распознаёт 'blocked' и имя защиты.
+      const challengeBudget = Math.max(
+        0,
+        Math.min(20_000, timeout - (Date.now() - renderStartedAt) - CHALLENGE_TAIL_RESERVE_MS),
+      );
       if (challengeBudget > 0) {
         await waitForChallengeResolution(page, { timeoutMs: challengeBudget });
         // После разрешения страница могла уйти на редирект — подождём сеть ещё раз.

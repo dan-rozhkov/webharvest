@@ -281,8 +281,14 @@ export function createService(config: Config): Service {
   // Browser use: отдельный пул долгоживущих страниц (session-pool.ts), не
   // путать с browser (browser.ts) выше — тот открывает/закрывает страницу на
   // один рендер и состояния между вызовами не хранит.
+  //
+  // idleTimeoutMs здесь сознательно НЕ прокидывается из конфига: config.
+  // idleTimeoutMs — это простой пула рендера (когда гасить браузер), а у
+  // session-pool тот же параметр означает совсем другое — сколько живёт
+  // сессия агента между шагами, пока он думает. Смешивать их значит молча
+  // урезать бюджет агента до настроек рендера. Оставляем собственный
+  // документированный дефолт пула (10 минут).
   const sessions = createSessionPool({
-    idleTimeoutMs: config.idleTimeoutMs,
     channel: config.browserChannel,
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'sessions') : undefined,
   });

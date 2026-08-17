@@ -221,10 +221,19 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         // Turnstile/Cloudflare: не отдавать агенту страницу-челлендж. Ждём
-        // авто-решения или кликаем чекбокс; бюджет отдельный от goto.
-        await waitForChallengeResolution(page, { timeoutMs: 20_000 });
+        // авто-решения или кликаем чекбокс; бюджет отдельный от goto. Если за
+        // бюджет челлендж не решился — это заблокированная страница, а не
+        // контент: бросаем blocked, чтобы агент получил честную причину, а не
+        // живую сессию с челленджем.
+        const resolved = await waitForChallengeResolution(page, { timeoutMs: 20_000 });
+        if (!resolved) {
+          throw new HarvestError('blocked', `Cloudflare/Turnstile не решился за 20с: ${url}`);
+        }
       } catch (e) {
         await page.close().catch(() => {});
+        // Уже сформированная HarvestError (например, blocked выше) — не
+        // переоборачиваем, иначе её код потеряется в общем 'network'.
+        if (HarvestError.is(e)) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         if (/timeout/i.test(msg)) {
           throw new HarvestError('timeout', `Браузер не дождался ${url}`);

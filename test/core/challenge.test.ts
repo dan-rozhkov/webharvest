@@ -25,6 +25,7 @@ function fakePage(overrides: Record<string, unknown> = {}) {
       locator: vi.fn(() => ({ first: vi.fn(() => ({ click: vi.fn(async () => {}) })) })),
     })),
     title: vi.fn(async () => 'Test Page'),
+    isClosed: vi.fn(() => false),
     mouse: { click: vi.fn(async () => {}) },
     waitForTimeout: vi.fn(async () => {}),
     ...overrides,
@@ -45,10 +46,23 @@ describe('isChallengeActive', () => {
     expect(await isChallengeActive(page)).toBe(false);
   });
 
-  it('true при наличии turnstile-iframe', async () => {
+  it('false при наличии только встроенного Turnstile-виджета (без маркеров блокирующего челленджа)', async () => {
+    // Находка ревью: iframe turnstile / #cf-turnstile / #turnstile-wrapper есть
+    // и у обычного виджета формы (логин/контакт), а не только у блокирующего
+    // челленджа. Виджет никуда не исчезает — если считать его челленджем,
+    // ожидание сжигало бы весь бюджет на каждой легитимной странице с формой.
     const page = fakePage({
       locator: vi.fn((sel: string) =>
         fakeLocator({ count: vi.fn(async () => (sel.includes('turnstile') ? 1 : 0)) }),
+      ),
+    });
+    expect(await isChallengeActive(page)).toBe(false);
+  });
+
+  it('true при наличии маркера блокирующего челленджа (#challenge-stage)', async () => {
+    const page = fakePage({
+      locator: vi.fn((sel: string) =>
+        fakeLocator({ count: vi.fn(async () => (sel.includes('challenge-stage') ? 1 : 0)) }),
       ),
     });
     expect(await isChallengeActive(page)).toBe(true);
@@ -57,6 +71,19 @@ describe('isChallengeActive', () => {
   it('true по заголовку "Just a moment"', async () => {
     const page = fakePage({ title: vi.fn(async () => 'Just a moment...') });
     expect(await isChallengeActive(page)).toBe(true);
+  });
+
+  it('пробрасывает ошибку закрытой страницы, а не трактует её как «челленджа нет»', async () => {
+    // Находка ревью: раньше try/catch глотал и «Target page/context has been
+    // closed» при конкурентном shutdown/eviction — isChallengeActive возвращал
+    // false, и open() отдавал агенту мёртвую сессию. Закрытая страница — это
+    // реальная ошибка, её надо пробросить выше.
+    const boom = new Error('Target page, context or browser has been closed');
+    const page = fakePage({
+      isClosed: vi.fn(() => true),
+      locator: vi.fn(() => ({ count: vi.fn(async () => { throw boom; }) })),
+    });
+    await expect(isChallengeActive(page)).rejects.toThrow(boom);
   });
 });
 
@@ -83,12 +110,12 @@ describe('waitForChallengeResolution', () => {
       const page = fakePage({
         locator: vi.fn((sel: string) =>
           fakeLocator({
-            // Первый вызов isChallengeActive видит челлендж (turnstile-селектор
-            // первым в QUICK_SELECTORS), второй — уже нет: счётчик тикает
-            // только на turnstile-селекторе, до которого цикл доходит в каждом
+            // Первый вызов isChallengeActive видит челлендж (#challenge-stage —
+            // маркер блокирующего челленджа), второй — уже нет: счётчик тикает
+            // только на этом селекторе, до которого цикл доходит в каждом
             // вызове isChallengeActive.
             count: vi.fn(async () => {
-              if (sel.includes('turnstile')) return activeChecks++ === 0 ? 1 : 0;
+              if (sel.includes('challenge-stage')) return activeChecks++ === 0 ? 1 : 0;
               return 0;
             }),
           }),

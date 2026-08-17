@@ -56,6 +56,23 @@ describe('launchBrowser', () => {
     expect(chromium.launch).toHaveBeenCalledTimes(2);
     expect(r.usedChannel).toBe('chromium');
   });
+  it('фолбэк сообщает о себе в лог — деградация канала не беззвучна', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(chromium.launch).mockRejectedValueOnce(new Error("Executable doesn't exist"));
+    await launchBrowser({ headless: true, channel: 'chrome' });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/chromium/i));
+    warn.mockRestore();
+  });
+  it('НЕ откатывается на chromium, если Chrome упал не из-за отсутствия', async () => {
+    // Залоченный userDataDir, краш процесса, сбой стелса — фолбэком не
+    // лечатся: повтор в bundled chromium лишь подменит явно выбранный
+    // оператором канал и спрячет настоящую причину.
+    vi.mocked(chromium.launch).mockRejectedValueOnce(
+      new Error('Failed to create a ProcessSingleton for your profile directory'),
+    );
+    await expect(launchBrowser({ headless: true, channel: 'chrome' })).rejects.toThrow(/ProcessSingleton/);
+    expect(chromium.launch).toHaveBeenCalledTimes(1);
+  });
   it('profileDir → launchPersistentContext с этим путём', async () => {
     const dir = tmpProfile();
     const r = await launchBrowser({ headless: true, profileDir: dir });

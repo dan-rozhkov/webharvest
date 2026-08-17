@@ -362,14 +362,14 @@ describe('BrowserPool', () => {
     expect(callCount).toBe(2); // Tried twice, then gave up
   });
 
-  it('дожидается разрешения имитированного Turnstile и возвращает контент', async () => {
+  it('дожидается разрешения имитированного челленджа и возвращает контент', async () => {
     const base = await serve(() => ({
       body: `<html><body>
-        <div id="cf-turnstile" style="width:300px;height:65px"></div>
+        <div id="challenge-stage" style="width:300px;height:65px"></div>
         <div id="root"></div>
         <script>
           setTimeout(() => {
-            document.getElementById('cf-turnstile').remove();
+            document.getElementById('challenge-stage').remove();
             document.getElementById('root').textContent = 'контент после челленджа';
           }, 2000);
         </script>

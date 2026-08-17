@@ -35,6 +35,16 @@ vi.mock('playwright', () => ({
   },
 }));
 
+// open() зовёт waitForChallengeResolution из challenge.js — мокаем его целиком,
+// чтобы оркестрацию пула можно было проверить независимо от детекта челленджа
+// (сам challenge.ts покрыт своими тестами). По умолчанию «челленджа нет»
+// (true = мгновенно решился); отдельный тест переопределяет на false, чтобы
+// проверить, что open() не отдаёт агенту нерешённый челлендж.
+const challengeMocks = vi.hoisted(() => ({ waitForChallengeResolution: vi.fn(async () => true) }));
+vi.mock('../../src/core/challenge.js', () => ({
+  waitForChallengeResolution: challengeMocks.waitForChallengeResolution,
+}));
+
 const { chromium } = await import('playwright');
 const { createSessionPool } = await import('../../src/core/session-pool.js');
 type SessionPool = ReturnType<typeof createSessionPool>;
@@ -43,6 +53,8 @@ let pool: SessionPool | undefined;
 
 afterEach(async () => {
   vi.useRealTimers();
+  challengeMocks.waitForChallengeResolution.mockReset();
+  challengeMocks.waitForChallengeResolution.mockResolvedValue(true);
   await pool?.shutdown();
   pool = undefined;
 });
@@ -218,5 +230,18 @@ describe('createSessionPool: stealth применяется к каждому н
     const ctx = await vi.mocked(chromium.launch).mock.results[0]!.value;
     const context = await (ctx as { newContext: ReturnType<typeof vi.fn> }).newContext.mock.results[0]!.value;
     expect((context as { addInitScript: ReturnType<typeof vi.fn> }).addInitScript).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createSessionPool: не отдаёт агенту нерешённый челлендж', () => {
+  it('бросает blocked, если waitForChallengeResolution вернул false, и не создаёт сессию', async () => {
+    // Находка ревью: open() раньше отбрасывал boolean-результат ожидания
+    // челленджа и всё равно создавал сессию с челлендж-страницей — агент
+    // получал ровно то, от чего модуль должен был защищать. Теперь false
+    // обязан превращаться в blocked: страница закрывается, сессии нет.
+    challengeMocks.waitForChallengeResolution.mockResolvedValueOnce(false);
+    pool = createSessionPool();
+    await expect(pool.open('http://example.test/')).rejects.toMatchObject({ code: 'blocked' });
+    expect(pool.count()).toBe(0); // страница закрыта в catch, сессия не создана
   });
 });

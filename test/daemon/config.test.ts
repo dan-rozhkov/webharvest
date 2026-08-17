@@ -119,6 +119,32 @@ describe('loadConfig', () => {
     expect(() => loadConfig()).toThrow(/bogus/);
   });
 
+  it('browserChannel с мусором в config.json падает так же громко, как из env', async () => {
+    // README описывает config.json и env как равноправные источники, но
+    // loadFromFile отдаёт сырой JSON.parse: без проверки после слияния
+    // "Chrome" тихо проваливался бы мимо channel === 'chrome' в
+    // launchBrowser и давал бы bundled chromium вместо запрошенного Chrome.
+    mkdirSync(join(fakeHome, '.webharvest'), { recursive: true });
+    writeFileSync(join(fakeHome, '.webharvest', 'config.json'), JSON.stringify({ browserChannel: 'Chrome' }));
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(() => loadConfig()).toThrow(/browserChannel/);
+    expect(() => loadConfig()).toThrow(/Chrome/);
+  });
+
+  it('нестроковый browserProfileDir в config.json падает с внятным сообщением, а не TypeError из join()', async () => {
+    mkdirSync(join(fakeHome, '.webharvest'), { recursive: true });
+    writeFileSync(join(fakeHome, '.webharvest', 'config.json'), JSON.stringify({ browserProfileDir: 42 }));
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(() => loadConfig()).toThrow(/browserProfileDir/);
+  });
+
+  it('валидный browserChannel из config.json проходит', async () => {
+    mkdirSync(join(fakeHome, '.webharvest'), { recursive: true });
+    writeFileSync(join(fakeHome, '.webharvest', 'config.json'), JSON.stringify({ browserChannel: 'chrome' }));
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(loadConfig().browserChannel).toBe('chrome');
+  });
+
   it('WEBHARVEST_BROWSER_PROFILE_DIR задаёт каталог persistent-профиля', async () => {
     process.env.WEBHARVEST_BROWSER_PROFILE_DIR = '/tmp/xyz';
     const { loadConfig } = await import('../../src/daemon/config.js');

@@ -89,6 +89,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (process.env.WEBHARVEST_PORT) fromEnv.port = parsePort(process.env.WEBHARVEST_PORT);
   if (process.env.WEBHARVEST_SEARXNG_URL) fromEnv.searxngUrl = process.env.WEBHARVEST_SEARXNG_URL;
   if (process.env.WEBHARVEST_BROWSER_CHANNEL) {
+    // Отдельная проверка от общей ниже — только ради имени переменной в
+    // сообщении: опечатку в plist/шелл-профиле надо чинить по имени, а не
+    // по имени поля конфига.
     const c = process.env.WEBHARVEST_BROWSER_CHANNEL;
     if (c !== 'chromium' && c !== 'chrome') {
       throw new Error(`WEBHARVEST_BROWSER_CHANNEL должен быть "chromium" или "chrome", получено: "${c}"`);
@@ -98,6 +101,25 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (process.env.WEBHARVEST_BROWSER_PROFILE_DIR) fromEnv.browserProfileDir = process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
 
   const merged = { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
+
+  // Валидируем ПОСЛЕ слияния, а не только значения из env: config.json —
+  // документированный (README) и равноправный источник, но loadFromFile
+  // отдаёт сырой JSON.parse, чей тип Partial<Config> — обещание, а не
+  // проверка. Без этого {"browserChannel": "Chrome"} в ~/.webharvest/
+  // config.json тихо проваливался бы мимо `channel === 'chrome'` в
+  // launchBrowser и давал bundled chromium вместо запрошенного Chrome, а
+  // нестроковый browserProfileDir падал бы голым TypeError из join() в
+  // service.ts — без единого упоминания, какое поле виновато.
+  if (merged.browserChannel !== 'chromium' && merged.browserChannel !== 'chrome') {
+    throw new Error(
+      `browserChannel должен быть "chromium" или "chrome", получено: "${String(merged.browserChannel)}"`,
+    );
+  }
+  if (merged.browserProfileDir !== null && typeof merged.browserProfileDir !== 'string') {
+    throw new Error(
+      `browserProfileDir должен быть строкой или null, получено: "${String(merged.browserProfileDir)}"`,
+    );
+  }
 
   // Defense in depth: even an explicit override cannot make the daemon bind
   // to a non-loopback interface. This is the one config invariant we never
