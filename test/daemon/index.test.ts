@@ -13,7 +13,7 @@ import { join, resolve, dirname } from 'node:path';
 // bind a port inside the test runner itself.
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../..');
-const viteNodeBin = resolve(repoRoot, 'node_modules/.bin/vite-node');
+const tsxBin = resolve(repoRoot, 'node_modules/.bin/tsx');
 
 function randomPort(): number {
   return 20000 + Math.floor(Math.random() * 20000);
@@ -21,7 +21,7 @@ function randomPort(): number {
 
 function spawnDaemon(port: number): ChildProcessWithoutNullStreams {
   const fakeHome = mkdtempSync(join(tmpdir(), 'webharvest-daemon-home-'));
-  return spawn(viteNodeBin, ['src/daemon/index.ts'], {
+  return spawn(tsxBin, ['src/daemon/index.ts'], {
     cwd: repoRoot,
     env: {
       ...process.env,
