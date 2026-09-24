@@ -186,34 +186,34 @@ PDFs are not parsed. The scraper detects the non-HTML content type and returns a
 
 Pages that require login are not supported. The scraper has no credential storage, session management, or form-filling logic for authentication. If a page redirects to a login screen, the scraper will return the login page HTML, not the authenticated content.
 
-### ⚠️ Interactive Anti-Bot Challenges — partially solved
+### ⚠️ Bot-Protected Sites — Recognised, Not Bypassed
 
-Challenges like Cloudflare Turnstile are handled **best-effort**, not guaranteed:
+Sites behind a bot wall (Cloudflare, DataDome, PerimeterX, Akamai) are often
+unreadable, and webharvest does not try to defeat the wall. What it does:
 
-- **Real Chrome**: with `browserChannel: "chrome"` the scraper drives your system
-  Google Chrome instead of bundled chromium — it passes Cloudflare's
-  bot checks far more often. If Chrome is not installed, webharvest falls
-  back to bundled chromium automatically.
-- **Persistent profile**: with `browserProfileDir` set, the browser keeps a
-  persistent profile, so cookies (including Cloudflare's `cf_clearance`)
-  survive daemon restarts. The first visit to a protected site warms the
-  clearance; subsequent visits go straight through.
-- **Challenge handling**: when a Cloudflare/Turnstile challenge appears, the
-  scraper waits for it to auto-resolve (most Turnstile checks pass without
-  any input) and, after ~4s, clicks the Turnstile checkbox once as a
-  best-effort nudge for interactive mode.
+- **Says so honestly.** When a protection is recognised, the response is
+  `blocked` and names the protection. A challenge page is never handed over as
+  content, and an empty body is never handed over as an article.
+- **Uses your browser.** With `browserChannel: "chrome"` the scraper drives your
+  system Google Chrome instead of bundled chromium (falling back to chromium
+  when Chrome is not installed); with `browserProfileDir` set, the browser keeps
+  a persistent profile, so cookies survive daemon restarts and a site you have
+  already visited does not see a stranger on every run. Both options are about
+  making the request look like an ordinary returning visitor — they are not a
+  way past a check, and on the protected sites I tested neither the channel
+  choice nor a warmed-up profile made a wall go away.
+- **Gives up rather than guesses.** No captcha-solving services, no proxy
+  rotation, nothing that needs a human (image selection, hCaptcha, DataDome and
+  PerimeterX widgets), and no attempt at servers that block by IP reputation.
 
-Example: `https://www.bazaraki.com` (behind Cloudflare Turnstile) returns its
-real content via the browser with `browserChannel: "chrome"`.
+Known false positive: the detector in `src/core/escalation.ts` matches the
+marked-up footprint of an embedded Turnstile widget, so an ordinary page that
+merely carries a Turnstile-protected login or newsletter form is reported as
+`blocked`. Measured on a real page: status 200, ~11 000 characters of article
+text, answer `blocked`. On the list to fix.
 
-What is **not** solved:
-
-- Interactive hCaptcha/DataDome challenges and any challenge requiring manual
-  input (image selection, etc.)
-- Blocking based on IP reputation — rotating proxies are out of scope
-
-If a challenge cannot be resolved, the response reports status `blocked` with
-an explanation. There is no integration with captcha-solving services.
+Protections also come and go. `bazaraki.com`, which needed the browser when this
+section was written, now answers plain HTTP requests.
 
 ### ❌ robots.txt Is Not Enforced as a Prohibition
 
@@ -255,15 +255,14 @@ Environment variables override config file settings:
 - `WEBHARVEST_SEARXNG_URL` — search backend URL
 - `BRAVE_API_KEY` — optional Brave Search API key (for fallback search)
 - `WEBHARVEST_BROWSER_CHANNEL` — `"chromium"` (default) | `"chrome"` — use your
-  system Google Chrome instead of the bundled chromium. Real Chrome passes
-  Cloudflare/Turnstile checks much more often. If Chrome is not installed, the
-  daemon automatically falls back to bundled chromium.
+  system Google Chrome instead of the bundled chromium. If Chrome is not
+  installed, the daemon automatically falls back to bundled chromium.
 - `WEBHARVEST_BROWSER_PROFILE_DIR` — path to a persistent browser profile.
-  Cookies (including Cloudflare's `cf_clearance`) survive daemon restarts,
-  so protected sites are only "warmed up" once. Disabled by default. Note:
-  the profile is shared between scrape and browser-use via two subdirectories
-  (`<dir>/scrape` and `<dir>/sessions`) — two Chromium processes cannot share
-  one `userDataDir`, hence the split.
+  Cookies survive daemon restarts, so a site you have already visited does not
+  see a stranger on every run. Disabled by default. Note: the profile is shared
+  between scrape and browser-use via two subdirectories (`<dir>/scrape` and
+  `<dir>/sessions`) — two Chromium processes cannot share one `userDataDir`,
+  hence the split.
 
 The same keys can be set in `~/.webharvest/config.json` as `browserChannel`
 and `browserProfileDir`.
@@ -341,10 +340,19 @@ Tests are excluded from the live-test suite unless you run `npm run test:live`.
 
 ## License
 
-[Check LICENSE file]
+MIT — see [LICENSE](./LICENSE).
+
+This is a personal tool, and running it is a local decision: the requests come
+from your machine under your IP, and staying within the terms of the sites you
+point it at is on you. The daemon deliberately does not read `robots.txt` (see
+above) — it enforces politeness with rate limiting instead.
 
 ## Attribution
 
 webharvest переиспользует код из [Stagehand](https://github.com/browserbase/stagehand)
 (MIT, © Browserbase, Inc.) — слой представления accessibility-дерева и контракт
 промптов act/observe/extract. Подробности в [NOTICE](./NOTICE).
+
+HTML-фикстуры в `test/fixtures/` — снимки публичных страниц, права остаются у их
+авторов. Происхождение и условия по каждой — в
+[test/fixtures/README.md](./test/fixtures/README.md).
