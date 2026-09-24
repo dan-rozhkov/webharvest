@@ -233,6 +233,10 @@ export function createFetcher(deps: FetcherDeps) {
         // Но защита, отданная под нетекстовым content-type, тоже не HTML —
         // агент узнал бы "не HTML" вместо "заблокировано Cloudflare", если
         // не перепроверить явно, прежде чем поверить content-type на слово.
+        //
+        // Без мер материала намеренно: из нетекстового тела извлекать
+        // нечего, измерить материал тут нечем, и виджет в таком ответе —
+        // стена, а не встроенная в статью форма (см. detectChallenge).
         const challenge = detectChallenge(attempt.html);
         if (challenge) {
           throw new HarvestError('blocked', `Страница закрыта защитой ${challenge}: ${attempt.finalUrl}`, {
@@ -251,6 +255,8 @@ export function createFetcher(deps: FetcherDeps) {
         contentType: attempt.contentType,
         html: attempt.html,
         extractedTextLength: probe.textLength,
+        extractedProseTextLength: probe.proseTextLength,
+        contentHasFormField: probe.hasFormField,
       });
 
       if (!verdict.escalate) {
@@ -261,7 +267,14 @@ export function createFetcher(deps: FetcherDeps) {
       // редиректы, браузер должен рендерить конечный адрес, а не заново
       // проходить всю цепочку с нуля.
       return renderViaBrowser(attempt.finalUrl, heldHosts, {
-        challenge: detectChallenge(attempt.html),
+        // Тот же замер, что и внутри shouldEscalate: имя защиты должно
+        // называться по одному правилу и в вердикте, и в контексте рендера,
+        // иначе виджет-страница может быть «challenge» в одном месте и «не
+        // защита» в другом.
+        challenge: detectChallenge(attempt.html, {
+          proseTextLength: probe.proseTextLength,
+          hasFormField: probe.hasFormField,
+        }),
         contentType: attempt.contentType,
       });
     });
@@ -296,19 +309,29 @@ export function createFetcher(deps: FetcherDeps) {
       // как и HTTP-хопы.
       await validate(rendered.finalUrl);
 
-      const stillChallenged = detectChallenge(rendered.html);
+      // extract() ДО проверки на челлендж: правило Turnstile-виджета решает,
+      // стена это или встроенная форма, по объёму извлечённого материала, а не
+      // по сырому тексту (стена внутри шаблона сайта приносит меню и подвал).
+      // Ниже извлечение всё равно нужно — порядок ничего не стоит.
+      const probe = extract(rendered.html, rendered.finalUrl);
+
+      const stillChallenged = detectChallenge(rendered.html, {
+        proseTextLength: probe.proseTextLength,
+        hasFormField: probe.hasFormField,
+      });
       if (stillChallenged) {
         throw new HarvestError('blocked', `Страница закрыта защитой ${stillChallenged}: ${url}`, {
           by: stillChallenged,
         });
       }
 
-      const probe = extract(rendered.html, rendered.finalUrl);
       const verdict = shouldEscalate({
         status: rendered.status,
         contentType: 'text/html',
         html: rendered.html,
         extractedTextLength: probe.textLength,
+        extractedProseTextLength: probe.proseTextLength,
+        contentHasFormField: probe.hasFormField,
       });
 
       // Браузер — последняя инстанция. Если и он не дал текста, честно сообщаем,

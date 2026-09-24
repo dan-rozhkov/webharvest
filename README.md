@@ -206,11 +206,13 @@ unreadable, and webharvest does not try to defeat the wall. What it does:
   rotation, nothing that needs a human (image selection, hCaptcha, DataDome and
   PerimeterX widgets), and no attempt at servers that block by IP reputation.
 
-Known false positive: the detector in `src/core/escalation.ts` matches the
-marked-up footprint of an embedded Turnstile widget, so an ordinary page that
-merely carries a Turnstile-protected login or newsletter form is reported as
-`blocked`. Measured on a real page: status 200, ~11 000 characters of article
-text, answer `blocked`. On the list to fix.
+The line between a wall and a form: Turnstile widget markup counts as a wall
+only when the page has almost no readable content of its own after extraction
+(footers and sidebars do not count towards that measure — they cannot promote a
+wall into an article; a wall measured tens of characters, an article carrying the
+same widget markup measured ~11 000) and offers nothing for a human to fill in —
+a sign-in or sign-up page that keeps only its form and the widget is handed over
+as a page, not reported as `blocked`.
 
 Protections also come and go. `bazaraki.com`, which needed the browser when this
 section was written, now answers plain HTTP requests.

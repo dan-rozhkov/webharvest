@@ -6,6 +6,12 @@ export interface EscalationInput {
   contentType: string | null;
   html: string;
   extractedTextLength: number;
+  /** Материал без озаглавленных подвалов/сайдбаров (`Extracted.proseTextLength`).
+   *  Нужен правилу Turnstile-виджета: обвязка стены не должна её прикрывать. */
+  extractedProseTextLength?: number;
+  /** Есть ли в извлечённом материале поля для человека (`Extracted.hasFormField`).
+   *  Нужно правилу Turnstile-виджета: страница формы — не стена. */
+  contentHasFormField?: boolean;
 }
 
 export interface EscalationVerdict {
@@ -56,13 +62,6 @@ const CHALLENGE_SIGNATURES: { name: Challenge; patterns: RegExp[] }[] = [
       // ответы 200, и по нему любая нормальная страница CF-сайта считалась бы
       // заблокированной — агент получил бы blocked на успешно скачанной статье.
       /\/cdn-cgi\/challenge-platform\/[^"'\s]*\/(?:orchestrate|chl_page|invisible|managed)\b/i,
-      // Turnstile: Cloudflare's newer, widget-based challenge (replacing the
-      // classic "Just a moment..." interstitial on many sites). Without this,
-      // a Turnstile-gated page has no cf-browser-verification / chl_opt
-      // markers to match and surfaces as a generic "no readable text" —
-      // technically true but hides that it's specifically an anti-bot wall.
-      /challenges\.cloudflare\.com\/turnstile/i,
-      /cf-turnstile/i,
     ],
   },
   {
@@ -77,6 +76,40 @@ const CHALLENGE_SIGNATURES: { name: Challenge; patterns: RegExp[] }[] = [
 ];
 
 /**
+ * Маркеры Turnstile-ВИДЖЕТА. Разметка у виджета и у стены из виджета одна и та
+ * же — скрипт `challenges.cloudflare.com/turnstile` плюс `div.cf-turnstile`, —
+ * но виджет ставят и на совершенно обычные страницы: форма логина, подписка на
+ * рассылку, контактная форма в конце статьи. Считать это блокировкой значит
+ * докладывать агенту `blocked` («закрыта защитой cloudflare») на странице,
+ * которую он спокойно прочитал бы.
+ *
+ * Поэтому виджет становится стеной только тогда, когда читаемого текста на
+ * странице почти нет (см. WIDGET_WALL_TEXT_THRESHOLD). Измерено на живых
+ * страницах: статья с встроенным виджетом — 11 435 символов видимого текста и
+ * `turnstile` в разметке (не стена); стена из виджета (nowsecure.nl) — 64
+ * символа (стена).
+ *
+ * Только для HTTP-пути: в живом DOM то же различие делает isChallengeActive
+ * (см. challenge.ts) по структурным id интерстишела.
+ */
+const WIDGET_SIGNATURES = [/challenges\.cloudflare\.com\/turnstile/i, /cf-turnstile/i];
+
+/**
+ * Сколько читаемого МАТЕРИАЛА должно быть на странице, чтобы виджет считался
+ * встроенной формой, а не стеной. Величина считается по тексту ПОСЛЕ извлечения
+ * (обвязка уже срезана), а не по сырому видимому тексту: стена, отданная внутри
+ * шаблона сайта, приносит с собой меню и подвал, и по сырому тексту она
+ * выглядит «страницей» — одна обвязка легко даёт больше 1200 символов, поэтому
+ * сырая мера пропускала бы такую стену как контент.
+ *
+ * Порог намеренно тот же, что THIN_TEXT_THRESHOLD: понятие «страница без
+ * текста» должно быть в файле одно, иначе пороги разъедутся в трактовке.
+ * Измерено: стена — 43-64 символа материала, статья со встроенным виджетом —
+ * 11 435.
+ */
+const WIDGET_WALL_CONTENT_THRESHOLD = THIN_TEXT_THRESHOLD;
+
+/**
  * Область поиска маркеров: разметка (теги с атрибутами), содержимое скриптов и
  * заголовок документа. Видимый текст исключён намеренно — статья про Cloudflare
  * или строка «just a moment» в абзаце не делают страницу заблокированной.
@@ -89,12 +122,51 @@ function markupOnly(html: string): string {
   return [...scripts, ...title, ...tags].join('\n');
 }
 
-export function detectChallenge(html: string): Challenge | null {
+/**
+ * Меры материала, которые нужны правилу Turnstile-виджета. Их даёт extractor
+ * (см. `Extracted`), потому что вердикт о виджете — вопрос о материале, а не о
+ * строке HTML: строковые проверки на этом и провалились (видели `<input>` в
+ * вырезанном `<nav>`, в `<template>` и в строке JS, а `\btype` путали с хвостом
+ * `data-type`/`xml:type`).
+ */
+export interface ChallengeOptions {
+  /**
+   * Объём читаемого материала после извлечения, БЕЗ сохранённых озаглавленных
+   * подвалов и сайдбаров (`Extracted.proseTextLength`). Именно эта мера решает,
+   * стена перед нами или статья: обвязка стены (меню, подвал сайта) приходит
+   * вместе со стеной и не должна превращать её в материал. `undefined` —
+   * измерить не удалось (так зовётся нетекстовое тело, из которого извлекать
+   * нечего).
+   */
+  proseTextLength?: number;
+  /**
+   * Есть ли в материале поля, которые заполняет человек
+   * (`Extracted.hasFormField`). `undefined` — материал не измерялся.
+   */
+  hasFormField?: boolean;
+}
+
+/**
+ * Есть ли на странице активная защита — и какая именно.
+ *
+ * Меры материала нужны только правилу Turnstile-виджета (стена или встроенная
+ * форма, см. WIDGET_SIGNATURES); остальные сигнатуры самодостаточны. Если мер
+ * нет, виджет считается стеной — так зовётся нетекстовое тело. Передавать
+ * пустой объект вместо честных мер из HTML-пути нельзя: это вернёт ложные
+ * `blocked` на страницах со встроенной формой.
+ */
+export function detectChallenge(html: string, options: ChallengeOptions = {}): Challenge | null {
   const haystack = markupOnly(html);
   for (const { name, patterns } of CHALLENGE_SIGNATURES) {
     if (patterns.some((p) => p.test(haystack))) return name;
   }
-  return null;
+  if (!WIDGET_SIGNATURES.some((p) => p.test(haystack))) return null;
+  // Материала достаточно — это статья с виджетом, а не стена.
+  if ((options.proseTextLength ?? 0) >= WIDGET_WALL_CONTENT_THRESHOLD) return null;
+  // Материала нет, но есть что заполнить — это страница формы, и отдать её
+  // агенту честнее, чем докладывать blocked про всю страницу.
+  if (options.hasFormField) return null;
+  return 'cloudflare';
 }
 
 function scriptBytes(html: string): number {
@@ -131,7 +203,8 @@ function visibleTextLength(html: string): number {
 }
 
 export function shouldEscalate(input: EscalationInput): EscalationVerdict {
-  const { status, contentType, html, extractedTextLength } = input;
+  const { status, contentType, html, extractedTextLength, extractedProseTextLength, contentHasFormField } =
+    input;
 
   // Внимание Task 9: сюда попадает и application/json — браузер не превратит его
   // в статью, так что «эскалировать» для таких типов означает лишь «HTTP-путь тут
@@ -140,7 +213,14 @@ export function shouldEscalate(input: EscalationInput): EscalationVerdict {
     return { escalate: true, reason: 'content_type' };
   }
   // Раньше статуса: по названию защиты fetcher формулирует ошибку blocked.
-  if (detectChallenge(html)) {
+  // Меры материала передаём обязательно: правило Turnstile-виджета решает,
+  // стена это или встроенная форма, именно по ним.
+  if (
+    detectChallenge(html, {
+      proseTextLength: extractedProseTextLength,
+      hasFormField: contentHasFormField,
+    })
+  ) {
     return { escalate: true, reason: 'challenge' };
   }
   if (BOT_STATUSES.has(status)) {

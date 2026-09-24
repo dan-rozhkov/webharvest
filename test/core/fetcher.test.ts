@@ -487,18 +487,28 @@ describe('DomainHints', () => {
     // на дешёвый HTTP-путь"). No real HTTP server needed here: once the
     // hint is set, fetch() goes straight to renderViaBrowser and never
     // touches httpGet.
-    const browser = fakeBrowser(article);
-    const hints = new DomainHints(200);
-    hints.markNeedsBrowser('127.0.0.1');
-    const f = createFetcher({ queue: new DomainQueue({ minIntervalMs: 0 }), browser, hints, allowPrivate: true });
+    // Часы поддельные: тест про TTL — про время, а не про скорость машины. На
+    // реальных таймерах он платил ~1.2с обязательного ожидания и всё равно
+    // зависел от нагрузки (под параллельными воркерами setTimeout опаздывает, и
+    // fetch уезжал в HTTP-путь на 127.0.0.1:80 → ECONNREFUSED). Проверяемое
+    // поведение то же: рендер по уже стоящему hint-у не продлевает TTL.
+    vi.useFakeTimers();
+    try {
+      const browser = fakeBrowser(article);
+      const hints = new DomainHints(1000);
+      hints.markNeedsBrowser('127.0.0.1');
+      const f = createFetcher({ queue: new DomainQueue({ minIntervalMs: 0 }), browser, hints, allowPrivate: true });
 
-    await f.fetch('http://127.0.0.1/a');
-    await new Promise((r) => setTimeout(r, 120));
-    // Still within the original 200ms TTL - this call must not reset the
-    // clock, even though it succeeds via the browser.
-    await f.fetch('http://127.0.0.1/b');
-    await new Promise((r) => setTimeout(r, 120)); // total elapsed since markNeedsBrowser: ~240ms > 200ms TTL
-    expect(hints.needsBrowser('127.0.0.1')).toBe(false);
-    expect(browser.calls).toBe(2);
+      await f.fetch('http://127.0.0.1/a');
+      await vi.advanceTimersByTimeAsync(250);
+      // Still within the original TTL - this call must not reset the clock, even
+      // though it succeeds via the browser.
+      await f.fetch('http://127.0.0.1/b');
+      await vi.advanceTimersByTimeAsync(900); // total elapsed since markNeedsBrowser: 1150ms > 1000ms TTL
+      expect(hints.needsBrowser('127.0.0.1')).toBe(false);
+      expect(browser.calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

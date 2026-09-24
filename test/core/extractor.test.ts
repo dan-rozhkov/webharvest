@@ -195,4 +195,175 @@ describe('extract: свойства', () => {
     const md = extract(load('github-repo'), 'https://github.com/searxng/searxng').markdown;
     expect(md).not.toContain('camo.githubusercontent.com');
   });
+
+  it('вырезает скип-линки и обвязку, которые извлекатель не убрал', () => {
+    // Регрессия: defuddle 0.19.4 под jsdom 30.1 падает на своём селекторе
+    // (лимит длины 2048) и МОЛЧА пропускает уборку обвязки, а его вывод —
+    // самый длинный, поэтому он же и побеждает в выборе кандидата. На этой
+    // странице нет article/main, так что семантическая ветка не спасёт.
+    const page =
+      '<html><head><title>Страница</title></head><body>' +
+      '<a class="mw-jump-link" href="#content">Jump to content</a>' +
+      '<ul class="a11y-menu"><li><a href="#search">Skip to main content</a></li></ul>' +
+      '<div id="content"><h1>Заголовок</h1><p>' +
+      'слово '.repeat(300) +
+      '</p><footer><p>Privacy policy</p></footer></div>' +
+      '</body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('Заголовок');
+    expect(md).not.toContain('Jump to content');
+    expect(md).not.toContain('Skip to main content');
+    expect(md).not.toContain('Privacy policy');
+  });
+
+  it('чистит и запасную ветку: сырой body без кандидатов', () => {
+    // Здесь ни одна из трёх стратегий не даёт полезного текста, и ответ строится
+    // из сырого body — обвязка обязана исчезнуть и там.
+    const page = '<html><body><a class="mw-jump-link" href="#content">Jump to content</a><p>кр</p></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).not.toContain('Jump to content');
+  });
+
+  it('сохраняет лид из <header> внутри статьи', () => {
+    // Обвязку нельзя удалять по одному лишь тегу: <header> внутри статьи несёт
+    // её заголовок и лид. Замер ревью: до этой проверки markdown такой страницы
+    // получался пустым.
+    const page =
+      '<html><body><article><header><h1>Критичный заголовок</h1>' +
+      '<p>Лид, без которого статья не читается.</p></header>' +
+      '<section><p>' +
+      'тело '.repeat(80) +
+      '</p></section></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('Критичный заголовок');
+    expect(md).toContain('Лид, без которого статья не читается');
+  });
+
+  it('сохраняет содержимое <form>, если это материал страницы', () => {
+    const page =
+      '<html><body><article><h1>Как оформить заказ</h1><form><h2>Шаг 1</h2><p>' +
+      'описание заказа '.repeat(60) +
+      '</p></form></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('Шаг 1');
+    expect(md).toContain('описание заказа');
+  });
+
+  it('сохраняет форму внутри статьи, даже если заголовка в ней нет', () => {
+    // Замер ревью (раунд 2): заголовок стоял ПЕРЕД формой, форма считалась
+    // обвязкой и уезжала целиком.
+    const page =
+      '<html><body><article><h1>Оформление</h1><form><p>' +
+      'описание заказа '.repeat(60) +
+      '</p></form></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('описание заказа');
+  });
+
+  it('подвал с заголовком сохраняется как материал, но не считается мерой статьи', () => {
+    // Ревью (раунд 2) показало, что подвал с <h2> внутри <main> мог раздувать
+    // материал выше порога и прикрывать стену Turnstile. Решение раунда 4:
+    // подвал как материал СОХРАНЯЕТСЯ (терять подписи и источники нельзя), а
+    // стена ловится отдельной мерой — proseTextLength считает текст БЕЗ
+    // озаглавленных подвалов/сайдбаров (см. тест про стену в escalation.test.ts).
+    const page =
+      '<html><body><main><p>' +
+      'текст '.repeat(40) +
+      '</p><footer><h2>Resources</h2><p>' +
+      'подвал '.repeat(200) +
+      '</p></footer></main></body></html>';
+    const { markdown, textLength, proseTextLength } = extract(page, 'https://example.com/');
+    expect(markdown).toContain('Resources');
+    expect(textLength).toBeGreaterThan(1200);
+    expect(proseTextLength).toBeLessThan(1200);
+  });
+
+  it('сохраняет заметку и источники в статье: это материал, а не обвязка', () => {
+    // Обратная сторона того же правила (ревью, раунд 3): дополнение к статье
+    // терять нельзя. Подвал/сайдбар остаются, если вокруг них есть материал.
+    const page =
+      '<html><body><article><p>' +
+      'текст статьи '.repeat(40) +
+      '</p><aside><h2>Примечание редактора</h2><p>УНИКАЛЬНАЯ ЗАМЕТКА</p></aside>' +
+      '<footer><h2>Источники</h2><p>УНИКАЛЬНЫЙ ИСТОЧНИК</p></footer></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('УНИКАЛЬНАЯ ЗАМЕТКА');
+    expect(md).toContain('УНИКАЛЬНЫЙ ИСТОЧНИК');
+  });
+
+  it('сохраняет лид, когда H1 стоит рядом с шапкой, а не внутри неё', () => {
+    // Ревью (раунд 3): требование «H1 внутри шапки» теряло лид статьи.
+    const page =
+      '<html><body><h1>Заголовок</h1><article><header><p>УНИКАЛЬНЫЙ ЛИД</p></header><p>' +
+      'тело '.repeat(80) +
+      '</p></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('УНИКАЛЬНЫЙ ЛИД');
+  });
+
+  it('сохраняет дополнение длиннее статьи: заметка-интервью не теряется', () => {
+    // Ревью (раунд 4): сравнение длины блока с остатком контейнера выбрасывало
+    // материал, который длиннее самой статьи.
+    const page =
+      '<html><body><article><h1>Новость</h1><p>' +
+      'коротко '.repeat(10) +
+      '</p><aside><h2>Полное интервью</h2><p>' +
+      'интервью '.repeat(120) +
+      '</p></aside></article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('Полное интервью');
+    expect(md).toContain('интервью');
+  });
+
+  it('материал в скрытой вкладке не удаляется вместе со скрывающим стилем', () => {
+    // Ревью (раунд 4): произвольно скрытый блок — не обвязка, под display:none
+    // бывает настоящий материал (транскрипт, вкладка). Скрывающий стиль теперь
+    // снимает только формы.
+    const page =
+      '<html><body><article><h1>История</h1><p>' +
+      'вступление '.repeat(20) +
+      '</p><section style="display:none"><h2>Транскрипт</h2><p>УНИКАЛЬНЫЙ ТРАНСКРИПТ</p></section>' +
+      '</article></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('УНИКАЛЬНЫЙ ТРАНСКРИПТ');
+  });
+
+  it('форма с одной кнопкой сохранена, а форма-трекер без полей и прозы — нет', () => {
+    // Ревью (раунд 4): кнопка отправки — тоже причина считать форму материалом.
+    const page =
+      '<html><body><main><h1>Оформление</h1><form><button>ПОДТВЕРДИТЬ ЗАКАЗ</button></form><p>' +
+      'описание '.repeat(30) +
+      '</p><form><p>ТРЕКЕР</p></form></main></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('ПОДТВЕРДИТЬ ЗАКАЗ');
+    expect(md).not.toContain('ТРЕКЕР');
+  });
+
+  it('шапка сайта внутри <main> не уезжает в материал, если в main есть article', () => {
+    // Ревью (раунд 4): правило «шапка внутри контейнера материала» пропускало
+    // навигацию страницы, когда она лежит внутри <main> рядом с article.
+    const page =
+      '<html><body><main><header><p>НАВИГАЦИЯ САЙТА</p></header><article><h1>Статья</h1><p>' +
+      'текст '.repeat(80) +
+      '</p></article></main></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).not.toContain('НАВИГАЦИЯ САЙТА');
+    expect(md).toContain('Статья');
+  });
+
+  it('удаляет формы-обвязку: без полей и прозы, скрытые инлайновым стилем', () => {
+    // Ревью (раунд 3): форма трекинга со скрытым полем и форма со
+    // style="display:none" уезжали в markdown как материал.
+    const page =
+      '<html><body><main><p>' +
+      'материал '.repeat(60) +
+      '</p><form><input type="hidden" name="track"></form>' +
+      '<form><p>Мы используем cookie</p></form>' +
+      '<form style="display:none"><p>СКРЫТАЯ ФОРМА</p></form>' +
+      '</main></body></html>';
+    const md = extract(page, 'https://example.com/').markdown;
+    expect(md).toContain('материал');
+    expect(md).not.toContain('Мы используем cookie');
+    expect(md).not.toContain('СКРЫТАЯ ФОРМА');
+  });
 });

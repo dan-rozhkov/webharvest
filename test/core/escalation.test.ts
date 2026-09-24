@@ -257,6 +257,18 @@ describe('shouldEscalate на всех фикстурах', () => {
 });
 
 describe('detectChallenge', () => {
+  /**
+   * Меры материала так, как их видит fetcher — через извлечение. Правило
+   * Turnstile-виджета решает по ним, поэтому тесты идут тем же путём: строковая
+   * проверка полей по HTML оказалась неверной (видела вырезанную обвязку,
+   * template/noscript и строки JS).
+   */
+  const measure = (page: string) => extract(page, 'https://example.com/');
+  const optionsOf = (m: { proseTextLength: number; hasFormField: boolean }) => ({
+    proseTextLength: m.proseTextLength,
+    hasFormField: m.hasFormField,
+  });
+
   it('узнаёт Cloudflare', () => {
     expect(detectChallenge(load('cf-challenge'))).toBe('cloudflare');
   });
@@ -295,6 +307,167 @@ describe('detectChallenge', () => {
 
   it('узнаёт Cloudflare Turnstile по одному лишь классу cf-turnstile', () => {
     expect(detectChallenge(html('<div class="cf-turnstile" data-sitekey="x"></div>'))).toBe('cloudflare');
+  });
+
+  it('НЕ считает стеной обычную страницу со встроенным виджетом Turnstile', () => {
+    // Форма логина или подписки на статье: разметка виджета на месте, стены нет.
+    // Раньше это давало `blocked` («закрыта защитой cloudflare») на читаемой
+    // странице — измерено на живой статье: 11 435 символов текста, ответ blocked.
+    const article = html(
+      '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<article><h1>Статья</h1><p>' +
+        'слово '.repeat(1000) +
+        '</p></article>',
+    );
+    const m = measure(article);
+    expect(detectChallenge(article, optionsOf(m))).toBeNull();
+    expect(shouldEscalate({ ...base, html: article, extractedTextLength: m.textLength, extractedProseTextLength: m.proseTextLength, contentHasFormField: m.hasFormField })).toEqual({
+      escalate: false,
+      reason: null,
+    });
+  });
+
+  it('всё ещё считает стеной страницу из одного виджета, где текста нет', () => {
+    // Обратная сторона: у настоящей стены из виджета читаемого текста нет —
+    // только имя сайта и подпись (замер: 64 символа).
+    const wall = html(
+      '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<h2>NOWSECURE</h2><p>by nodriver</p>',
+    );
+    const m = measure(wall);
+    expect(detectChallenge(wall, optionsOf(m))).toBe('cloudflare');
+    expect(shouldEscalate({ ...base, html: wall, extractedTextLength: m.textLength, extractedProseTextLength: m.proseTextLength, contentHasFormField: m.hasFormField })).toEqual({
+      escalate: true,
+      reason: 'challenge',
+    });
+  });
+
+  it('видит стену, отданную внутри шаблона сайта: сырого текста много, материала нет', () => {
+    // Меню и подвал вокруг стены дают тысячи символов СЫРОГО видимого текста, а
+    // материала на странице нет. Мера по сырому тексту пропускала бы такую стену
+    // как контент — поэтому считается извлечённый материал.
+    const wall = html(
+      '<nav>' +
+        'меню '.repeat(400) +
+        '</nav>' +
+        '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<p>NOWSECURE by nodriver</p>' +
+        '<footer>' +
+        'подвал '.repeat(400) +
+        '</footer>',
+    );
+    const m = measure(wall);
+    expect(m.proseTextLength).toBeLessThan(1200);
+    expect(detectChallenge(wall, optionsOf(m))).toBe('cloudflare');
+  });
+
+  it('НЕ считает стеной страницу формы: материал беден, но есть поля для человека', () => {
+    // Страница входа с виджетом: материала мало, но заполняет её человек.
+    // Докладывать blocked про всю страницу тут нечестно.
+    const login = html(
+      '<main><h1>Sign in</h1><form>' +
+        '<label>Email</label><input type="email" name="email">' +
+        '<label>Password</label><input type="password" name="password">' +
+        '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<button>Sign in</button></form></main>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',
+    );
+    const m = measure(login);
+    expect(detectChallenge(login, optionsOf(m))).toBeNull();
+    expect(shouldEscalate({ ...base, html: login, extractedTextLength: m.textLength, extractedProseTextLength: m.proseTextLength, contentHasFormField: m.hasFormField })).toEqual({
+      escalate: false,
+      reason: null,
+    });
+  });
+
+  it('ловит стену, у которой подвал с заголовком раздувал материал', () => {
+    // Замер ревью (раунд 2): подвал с <h2> внутри <main> оставался в тексте,
+    // объём материала переваливал порог, и стена уезжала агенту как контент.
+    // Ревью (раунд 4) уточнило решение: подвал как материал СОХРАНЯЕТСЯ, но мера
+    // для виджета считается без него — обвязка стены не должна её прикрывать.
+    const wall = html(
+      '<main>Verify<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<footer><h2>Resources</h2>' +
+        'подвал '.repeat(300) +
+        '</footer></main>',
+    );
+    const m = measure(wall);
+    expect(m.proseTextLength).toBeLessThan(1200);
+    expect(detectChallenge(wall, optionsOf(m))).toBe('cloudflare');
+    expect(shouldEscalate({ ...base, html: wall, extractedTextLength: m.textLength, extractedProseTextLength: m.proseTextLength, contentHasFormField: m.hasFormField })).toEqual({
+      escalate: true,
+      reason: 'challenge',
+    });
+  });
+
+  it('поле-ловушка и кнопка отправки не превращают стену в форму', () => {
+    // Ревью (раунд 4): не заполняемые поля (submit) и поля, спрятанные по имени
+    // класса (honeypot, visually-hidden), не делают страницу формой.
+    const wall = html(
+      '<main><div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<form><input class="hidden honeypot" name="hp"><input type="submit" value="Go"></form>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<p>Verify you are human</p></main>',
+    );
+    const m = measure(wall);
+    expect(m.hasFormField).toBe(false);
+    expect(detectChallenge(wall, optionsOf(m))).toBe('cloudflare');
+  });
+
+  it('граница порога материала: 1199 — стена, 1200 — уже статья', () => {
+    const page = html(
+      '<div class="cf-turnstile" data-sitekey="x"></div>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',
+    );
+    expect(detectChallenge(page, { proseTextLength: 1199 })).toBe('cloudflare');
+    expect(detectChallenge(page, { proseTextLength: 1200 })).toBeNull();
+  });
+
+  it('скрытый токен, подделка под type и ввод из строки JS не выдают стену за форму', () => {
+    // Первая версия проверяла поля по строке HTML и провалилась: `<input>` в
+    // вырезанном nav, в template/noscript, в строке JS и `data-type=email`/`xml:type`
+    // проходили за настоящее поле. Теперь поля считает extractor по DOM материала.
+    const wall = html(
+      '<nav><input type="search" name="q"></nav>' +
+        '<div class="cf-turnstile" data-sitekey="x">' +
+        '<input type="hidden" name="cf-turnstile-response"></div>' +
+        '<input type="hidden" data-type="email">' +
+        '<input type="hidden" xml:type="email">' +
+        '<template><input type="email"></template>' +
+        '<noscript><input type="email"></noscript>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' +
+        '<script>var t = \'<input type=text>\';</script>' +
+        '<p>Verify you are human</p>',
+    );
+    const m = measure(wall);
+    expect(m.hasFormField).toBe(false);
+    expect(detectChallenge(wall, optionsOf(m))).toBe('cloudflare');
+  });
+
+  it('ввод без type (по умолчанию text) и select делают страницу формой', () => {
+    const form = html(
+      '<form><input name="email" data-type="hidden"><select name="plan"><option>a</option></select>' +
+        '<label>Email</label><div class="cf-turnstile" data-sitekey="x"></div></form>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',
+    );
+    const m = measure(form);
+    expect(m.hasFormField).toBe(true);
+    expect(detectChallenge(form, optionsOf(m))).toBeNull();
+  });
+
+  it('один чекбокс на странице с виджетом — это форма', () => {
+    const consent = html(
+      '<form><label>Мне 18</label><input type="checkbox" name="age">' +
+        '<div class="cf-turnstile" data-sitekey="x"></div></form>' +
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',
+    );
+    const m = measure(consent);
+    expect(m.hasFormField).toBe(true);
+    expect(detectChallenge(consent, optionsOf(m))).toBeNull();
   });
 
   it('узнаёт DataDome', () => {
