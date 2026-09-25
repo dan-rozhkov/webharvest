@@ -212,6 +212,20 @@ async function main(): Promise<void> {
       // фикстуры выше пошли бы через браузер в следующих прогонах.
       await timed('scrape spa (browser escalation)', () => S.scrape({ url: `${base.replace('127.0.0.1', 'localhost')}/spa`, refresh: true }), (r) => ({ ok: r.via === 'browser' && /Dashboard ready/.test(r.markdown) }));
 
+      // Три страницы разом — как search с fetchContent (concurrency 3).
+      await timed('scrape ×3 concurrent (wiki+github+nodejs)', () =>
+        Promise.all(['wikipedia-web', 'github-repo', 'nodejs-blog'].map((fx) => S.scrape({ url: `${base}/fx/${fx}`, refresh: true }))),
+      );
+      // Клик в браузере, пока демон разбирает тяжёлую страницу: не должен ждать разбор.
+      {
+        const o = await S.browserOpen({ url: `${base}/form` });
+        const bg = S.scrape({ url: `${base}/fx/wikipedia-web`, refresh: true });
+        await new Promise((r) => setTimeout(r, 150));
+        await timed('click during heavy scrape', () => S.browserClick({ sessionId: o.sessionId, elementId: idOf(o.outline, /button: Local/) }));
+        await bg;
+        await S.browserClose({ sessionId: o.sessionId });
+      }
+
       if (LIVE) {
         for (const url of ['https://en.wikipedia.org/wiki/Web_scraping', 'https://news.ycombinator.com/']) {
           const o = await timed(`live open ${new URL(url).host}`, () => S.browserOpen({ url }), (r) => ({ bytes: r.outline.length }));

@@ -6,6 +6,7 @@ import { Cache, scrapeKey } from '../core/cache.js';
 import { DomainQueue } from '../core/politeness.js';
 import { createBrowserPool } from '../core/browser.js';
 import { createFetcher, DomainHints } from '../core/fetcher.js';
+import { createExtractPool } from '../core/extract-pool.js';
 import { assertAllowedUrl, assertPublicHost } from '../core/url.js';
 import { HarvestError } from '../core/errors.js';
 import { createSearch, createSearxngProvider, createBraveProvider } from '../core/search/index.js';
@@ -292,7 +293,9 @@ export function createService(config: Config): Service {
     channel: config.browserChannel,
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'scrape') : undefined,
   });
+  const extractPool = createExtractPool();
   const fetcher = createFetcher({
+    extract: extractPool.extract,
     queue: new DomainQueue(),
     browser,
     hints: new DomainHints(),
@@ -769,6 +772,7 @@ export function createService(config: Config): Service {
       clearInterval(purgeTimer);
       await browser.shutdown();
       await sessions.shutdown();
+      await extractPool.shutdown();
       cache.close();
     },
     isBrowserRunning() {

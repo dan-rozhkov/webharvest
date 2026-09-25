@@ -32,6 +32,9 @@ export interface FetcherDeps {
   /** Только для тестов: пускает 127.0.0.1 и прочие приватные адреса мимо
    *  SSRF-валидации. Никогда не должен включаться в проде. */
   allowPrivate?: boolean;
+  /** Где исполнять extract(): демон отдаёт пул потоков (extract-pool.ts),
+   *  по умолчанию — синхронно в текущем потоке. */
+  extract?: (html: string, url: string) => Extracted | Promise<Extracted>;
 }
 
 const USER_AGENT = 'webharvest/0.1 (+personal research tool)';
@@ -69,6 +72,7 @@ export function createFetcher(deps: FetcherDeps) {
   const httpTimeoutMs = deps.httpTimeoutMs ?? 10_000;
   const browserTimeoutMs = deps.browserTimeoutMs ?? 30_000;
   const maxBytes = deps.maxBytes ?? 5 * 1024 * 1024;
+  const runExtract = deps.extract ?? extract;
 
   /** Валидирует URL так же строго, как публичный вход: и синхронную проверку
    *  формы (assertAllowedUrl), и DNS-резолв (assertPublicHost). Вызывается и
@@ -249,7 +253,7 @@ export function createFetcher(deps: FetcherDeps) {
         });
       }
 
-      const probe = extract(attempt.html, attempt.finalUrl);
+      const probe = await runExtract(attempt.html, attempt.finalUrl);
       const verdict = shouldEscalate({
         status: attempt.status,
         contentType: attempt.contentType,
@@ -313,7 +317,7 @@ export function createFetcher(deps: FetcherDeps) {
       // стена это или встроенная форма, по объёму извлечённого материала, а не
       // по сырому тексту (стена внутри шаблона сайта приносит меню и подвал).
       // Ниже извлечение всё равно нужно — порядок ничего не стоит.
-      const probe = extract(rendered.html, rendered.finalUrl);
+      const probe = await runExtract(rendered.html, rendered.finalUrl);
 
       const stillChallenged = detectChallenge(rendered.html, {
         proseTextLength: probe.proseTextLength,
