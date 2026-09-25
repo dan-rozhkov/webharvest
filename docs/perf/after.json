@@ -1,128 +1,138 @@
 [
   {
     "name": "open form",
-    "p50": 202,
-    "p95": 204,
+    "p50": 210,
+    "p95": 217,
     "kb": 5.7
   },
   {
     "name": "snapshot form",
     "p50": 4,
-    "p95": 4,
+    "p95": 5,
     "kb": 5.7
   },
   {
     "name": "fill",
     "p50": 83,
-    "p95": 90
+    "p95": 85
   },
   {
     "name": "select",
-    "p50": 76,
+    "p50": 77,
     "p95": 79
   },
   {
     "name": "click (local DOM change)",
-    "p50": 134,
-    "p95": 137,
+    "p50": 132,
+    "p95": 139,
     "ok": "5/5"
   },
   {
     "name": "click (fetch 300ms → DOM)",
     "p50": 437,
-    "p95": 442,
+    "p95": 439,
     "ok": "5/5"
   },
   {
     "name": "press Enter (submit)",
-    "p50": 124,
+    "p50": 125,
     "p95": 127,
     "ok": "5/5"
   },
   {
     "name": "scroll",
-    "p50": 79,
-    "p95": 81
+    "p50": 77,
+    "p95": 79
   },
   {
     "name": "click link (navigation)",
-    "p50": 149,
-    "p95": 153,
+    "p50": 146,
+    "p95": 159,
     "ok": "5/5"
   },
   {
     "name": "act: fill+select+submit (1 call)",
-    "p50": 272,
-    "p95": 280,
+    "p50": 271,
+    "p95": 275,
     "ok": "5/5"
   },
   {
     "name": "open busy",
-    "p50": 1111,
-    "p95": 1122
+    "p50": 1131,
+    "p95": 1142
   },
   {
     "name": "click (busy page)",
-    "p50": 142,
-    "p95": 165,
+    "p50": 141,
+    "p95": 147,
     "ok": "5/5"
   },
   {
     "name": "open spa",
-    "p50": 497,
-    "p95": 510,
+    "p50": 506,
+    "p95": 512,
     "ok": "5/5"
   },
   {
     "name": "open wikipedia-web",
-    "p50": 506,
-    "p95": 576,
+    "p50": 537,
+    "p95": 540,
     "kb": 23.6
   },
   {
     "name": "snapshot wikipedia-web",
-    "p50": 196,
-    "p95": 205
+    "p50": 204,
+    "p95": 218
   },
   {
     "name": "open github-repo",
-    "p50": 278,
-    "p95": 294,
+    "p50": 281,
+    "p95": 289,
     "kb": 23.6
   },
   {
     "name": "snapshot github-repo",
-    "p50": 46,
-    "p95": 46
+    "p50": 45,
+    "p95": 45
   },
   {
     "name": "scrape wikipedia-web",
-    "p50": 2388,
-    "p95": 2526,
+    "p50": 2512,
+    "p95": 2548,
     "kb": 170.9
   },
   {
     "name": "scrape mdn-fetch",
-    "p50": 424,
-    "p95": 480,
+    "p50": 441,
+    "p95": 485,
     "kb": 31.4
   },
   {
     "name": "scrape hn-front",
-    "p50": 264,
-    "p95": 269,
+    "p50": 261,
+    "p95": 284,
     "kb": 15.9
   },
   {
     "name": "scrape github-repo",
-    "p50": 890,
-    "p95": 937,
+    "p50": 895,
+    "p95": 934,
     "kb": 18.5
   },
   {
     "name": "scrape spa (browser escalation)",
-    "p50": 559,
-    "p95": 568,
+    "p50": 564,
+    "p95": 564,
     "ok": "5/5"
+  },
+  {
+    "name": "scrape ×3 concurrent (wiki+github+nodejs)",
+    "p50": 2570,
+    "p95": 3107
+  },
+  {
+    "name": "click during heavy scrape",
+    "p50": 126,
+    "p95": 138
   }
 ]
