@@ -1,7 +1,8 @@
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
-import { waitForChallengeResolution } from './challenge.js';
+import { isChallengeActive, waitForChallengeResolution } from './challenge.js';
+import { trackNetwork, waitForNetworkQuiet, LOAD_QUIET_CAP_MS, LOAD_QUIET_MS, type NetworkTracker } from './settle.js';
 
 export interface RenderResult {
   html: string;
@@ -65,7 +66,8 @@ export async function retryPageContent(
 }
 
 /** Сколько миллисекунд бюджета оставляем ожиданию челленджа «на хвост»:
- *  networkidle (≤1000) + settle (300) + page.content() после него. Должно
+ *  DOMContentLoaded после редиректа (≤1000) + тишина сети (≤LOAD_QUIET_CAP_MS)
+ *  + page.content() после него. Должно
  *  быть меньше запаса внешнего дедлайна в render() (timeout + 1500). */
 const CHALLENGE_TAIL_RESERVE_MS = 2_000;
 
@@ -189,25 +191,30 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     const renderStartedAt = Date.now();
     let gen: number;
     let page: Page;
+    let network: NetworkTracker;
     try {
       const acquired = await ensure();
       gen = acquired.gen;
       page = await acquired.ctx.newPage();
       onPage(page);
+      // До goto: запросы самой загрузки тоже должны попасть в счёт.
+      network = trackNetwork(page);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new HarvestError('network', `Не удалось запустить браузер: ${msg}`);
     }
     try {
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-      // A short best-effort wait for network activity to settle. Capped
-      // well below `timeout` regardless of the caller's budget, so it
-      // can't itself eat into the headroom the outer deadline relies on.
-      await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
+      // Короткая best-effort тишина сети вместо networkidle(1000)+300мс: на
+      // тихой странице это LOAD_QUIET_MS, SPA успевает дорисоваться данными,
+      // а long-poll/аналитика не держат рендер (см. settle.ts). Потолок —
+      // сильно ниже `timeout`, чтобы не съесть запас внешнего дедлайна.
+      const quiet = { quietMs: LOAD_QUIET_MS, capMs: Math.min(LOAD_QUIET_CAP_MS, timeout) };
+      await waitForNetworkQuiet(page, network, { sinceGen: 0, ...quiet });
       // Cloudflare/Turnstile: если страница показывает челлендж, даём ему
       // шанс решиться (авто-решение или клик по чекбоксу), не выходя за
       // бюджет вызывающего. Бюджет — остаток от timeout после навигации,
-      // минус хвост (второй networkidle + settle + page.content() ниже).
+      // минус хвост (повторная тишина + page.content() ниже).
       // Резерв обязателен: внешняя гонка в render() отменяет рендер уже на
       // timeout + 1500, так что ожидание челленджа «до самого timeout»
       // гарантированно проигрывало бы дедлайну на нерешённом челлендже —
@@ -217,12 +224,13 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
         0,
         Math.min(20_000, timeout - (Date.now() - renderStartedAt) - CHALLENGE_TAIL_RESERVE_MS),
       );
-      if (challengeBudget > 0) {
+      if (challengeBudget > 0 && (await isChallengeActive(page))) {
+        const gen = network.generation();
         await waitForChallengeResolution(page, { timeoutMs: challengeBudget });
         // После разрешения страница могла уйти на редирект — подождём сеть ещё раз.
-        await page.waitForLoadState('networkidle', { timeout: Math.min(1000, timeout) }).catch(() => {});
+        await page.waitForLoadState('domcontentloaded', { timeout: Math.min(1000, timeout) }).catch(() => {});
+        await waitForNetworkQuiet(page, network, { sinceGen: gen, ...quiet });
       }
-      await page.waitForTimeout(300);
 
       // Retry page.content() if it fails with navigation race condition.
       const html = await retryPageContent(() => page.content());

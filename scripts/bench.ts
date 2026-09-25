@@ -54,7 +54,7 @@ const BUSY_PAGE = `<!doctype html><html><head><title>Busy</title></head><body>
 
 // Контент дорисовывается после fetch — как у типичного SPA.
 const SPA_PAGE = `<!doctype html><html><head><title>SPA</title></head><body>
-<div id="root">Loading…</div>
+<div id="root"></div>
 <script>
   fetch('/api/slow').then(r => r.text()).then(() => {
     document.getElementById('root').innerHTML = '<h1>Dashboard ready</h1><button>Refresh</button>';
@@ -151,7 +151,7 @@ async function main(): Promise<void> {
     // Прогрев: запуск Chromium обоих пулов в замер не входит.
     const warm = await S.browserOpen({ url: `${base}/form` });
     await S.browserClose({ sessionId: warm.sessionId });
-    await S.scrape({ url: `${base}/spa`, refresh: true }).catch(() => {});
+    await S.scrape({ url: `${base.replace('127.0.0.1', 'localhost')}/spa`, refresh: true }).catch(() => {});
 
     for (let run = 0; run < RUNS; run++) {
       // --- форма: основные действия ---
@@ -194,7 +194,9 @@ async function main(): Promise<void> {
       for (const fx of ['wikipedia-web', 'mdn-fetch', 'hn-front', 'github-repo']) {
         await timed(`scrape ${fx}`, () => S.scrape({ url: `${base}/fx/${fx}`, refresh: true }), (r) => ({ bytes: r.markdown.length }));
       }
-      await timed('scrape spa (browser escalation)', () => S.scrape({ url: `${base}/spa`, refresh: true }), (r) => ({ ok: r.via === 'browser' && /Dashboard ready/.test(r.markdown) }));
+      // localhost, а не 127.0.0.1: DomainHints запомнит эскалацию по хосту, и
+      // фикстуры выше пошли бы через браузер в следующих прогонах.
+      await timed('scrape spa (browser escalation)', () => S.scrape({ url: `${base.replace('127.0.0.1', 'localhost')}/spa`, refresh: true }), (r) => ({ ok: r.via === 'browser' && /Dashboard ready/.test(r.markdown) }));
 
       if (LIVE) {
         for (const url of ['https://en.wikipedia.org/wiki/Web_scraping', 'https://news.ycombinator.com/']) {
