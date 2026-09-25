@@ -40,7 +40,11 @@ const searchSchema = z.object({
 
 const browserOpenSchema = z.object({ url: z.string().min(1) });
 
-const browserSnapshotSchema = z.object({ sessionId: z.string().min(1) });
+const browserSnapshotSchema = z.object({
+  sessionId: z.string().min(1),
+  part: z.number().int().positive().optional(),
+  full: z.boolean().optional(),
+});
 
 const browserElementSchema = z.object({
   sessionId: z.string().min(1),
@@ -61,6 +65,20 @@ const browserSelectSchema = browserElementSchema.extend({ value: z.string().min(
 const browserScrollSchema = browserElementSchema.extend({ percent: z.string().min(1) });
 
 const browserCloseSchema = z.object({ sessionId: z.string().min(1) });
+
+const actStepSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.enum(['click', 'hover']), elementId: z.string().min(1) }),
+  z.object({ action: z.enum(['fill', 'type']), elementId: z.string().min(1), text: z.string() }),
+  z.object({ action: z.literal('press'), elementId: z.string().min(1), key: z.string().min(1) }),
+  z.object({ action: z.literal('select'), elementId: z.string().min(1), value: z.string().min(1) }),
+  z.object({ action: z.literal('scroll'), elementId: z.string().min(1), percent: z.string().min(1) }),
+]);
+
+const browserActSchema = z.object({
+  sessionId: z.string().min(1),
+  actions: z.array(actStepSchema).min(1).max(10),
+  variables: z.record(z.string()).optional(),
+});
 
 /** Тот же способ, что и у /scrape выше: назвать поле, которое реально не
  *  прошло валидацию, а не всегда одно и то же захардкоженное имя. */
@@ -161,6 +179,12 @@ export function createHttpServer(service: Service): FastifyInstance {
     const parsed = browserSnapshotSchema.safeParse(req.body);
     if (!parsed.success) throw invalidRequest(parsed);
     return requireBrowserMethod(service.browserSnapshot, 'browserSnapshot')(parsed.data);
+  });
+
+  app.post('/browser/act', async (req) => {
+    const parsed = browserActSchema.safeParse(req.body);
+    if (!parsed.success) throw invalidRequest(parsed);
+    return requireBrowserMethod(service.browserAct, 'browserAct')(parsed.data);
   });
 
   app.post('/browser/click', async (req) => {

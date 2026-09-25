@@ -14,6 +14,7 @@ import { truncateMarkdown, type ScrapePayload } from '../core/format.js';
 import { createSessionPool, type BrowserSession } from '../core/session-pool.js';
 import { captureSnapshot } from '../core/a11y/capture.js';
 import { settleAfterAction, watchNavigation } from '../core/settle.js';
+import { budgetOutline, budgetNotice } from '../core/a11y/budget.js';
 import { diffOutlines } from '../core/a11y/diff.js';
 import { redactSecrets, redactOutlineSecrets } from '../core/a11y/format.js';
 import type { A11ySnapshot } from '../core/a11y/types.js';
@@ -40,6 +41,23 @@ export interface BrowserSnapshotResult {
  *  подтверждается уже тем, что вызов не бросил исключение. */
 export interface BrowserActionResult {
   changed: string;
+  /** Действие увело страницу на новый документ — `changed` тогда и есть его дерево. */
+  navigated?: boolean;
+  url?: string;
+}
+
+/** Шаг пачки browser_act: те же действия, что у отдельных инструментов. */
+export type BrowserActStep =
+  | { action: 'click' | 'hover'; elementId: string }
+  | { action: 'fill' | 'type'; elementId: string; text: string }
+  | { action: 'press'; elementId: string; key: string }
+  | { action: 'select'; elementId: string; value: string }
+  | { action: 'scroll'; elementId: string; percent: string };
+
+export interface BrowserActResult extends BrowserActionResult {
+  /** Сколько шагов выполнено; при ошибке — номер упавшего (с нуля) и её текст. */
+  done: number;
+  failed?: { step: number; error: string };
 }
 
 export interface Service {
@@ -58,7 +76,9 @@ export interface Service {
    *  агент мог посмотреть на текущее состояние страницы (например, после
    *  того как сам открыл её или после навигации, которую не отследить
    *  дифом), не открывая сессию заново. */
-  browserSnapshot?(args: { sessionId: string }): Promise<BrowserSnapshotResult>;
+  browserSnapshot?(args: { sessionId: string; part?: number; full?: boolean }): Promise<BrowserSnapshotResult>;
+  /** Несколько действий за один вызов: один снапшот и один диф на всю пачку. */
+  browserAct?(args: { sessionId: string; actions: BrowserActStep[]; variables?: Variables }): Promise<BrowserActResult>;
   browserClick?(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult>;
   browserHover?(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult>;
   browserFill?(args: {
@@ -241,6 +261,11 @@ export function redactHarvestError(e: HarvestError, secrets: ReadonlyMap<string,
   return new HarvestError(e.code, redactSecrets(e.message, secrets), e.detail);
 }
 
+function stripHash(url: string): string {
+  const i = url.indexOf('#');
+  return i === -1 ? url : url.slice(0, i);
+}
+
 export function createService(config: Config): Service {
   if (config.cachePath !== ':memory:') {
     mkdirSync(dirname(config.cachePath), { recursive: true });
@@ -311,6 +336,24 @@ export function createService(config: Config): Service {
     // и есть «последнее, что он видел», база дифа следующего действия.
     session.lastSnapshot = snapshot;
     return snapshot;
+  }
+
+  /** Дерево для агента — под бюджетом (см. a11y/budget.ts), с подписью, если урезано. */
+  function presentOutline(outline: string, opts: { part?: number; full?: boolean } = {}): string {
+    const b = budgetOutline(outline, opts);
+    const notice = budgetNotice(b);
+    return notice ? `${b.text}\n\n${notice}` : b.text;
+  }
+
+  /** Диф под тем же бюджетом; части дифа не адресуемы — отсылаем к снапшоту. */
+  function presentChanged(changed: string): string {
+    const b = budgetOutline(changed);
+    if (!b.compacted) return b.text;
+    const tail =
+      b.parts > 1
+        ? '(Изменений много — показано начало в компактном виде. Всё текущее дерево — browser_snapshot.)'
+        : '(Изменения показаны в компактном виде. Полное дерево — browser_snapshot с full=true.)';
+    return `${b.text}\n\n${tail}`;
   }
 
   /**
@@ -509,18 +552,23 @@ export function createService(config: Config): Service {
       // этого момента sweep/eviction снова вправе её тронуть, как и любую
       // другую свободную сессию.
       sessions.release(session.id);
-      return { sessionId: session.id, outline: snapshot.outline };
+      return { sessionId: session.id, outline: presentOutline(snapshot.outline) };
     } catch (e) {
       await sessions.close(session.id);
       throw e;
     }
   }
 
-  async function browserSnapshot(args: { sessionId: string }): Promise<BrowserSnapshotResult> {
+  async function browserSnapshot(args: { sessionId: string; part?: number; full?: boolean }): Promise<BrowserSnapshotResult> {
     return withSession(args.sessionId, async (session) => {
       await assertSessionUrlSafe(session);
-      const snapshot = await captureRedactedSnapshot(session.page, session);
-      return { outline: snapshot.outline };
+      // Следующая часть того же дерева — из кэша: иначе части одного
+      // «листания» собирались бы из разных снимков и могли разойтись.
+      const snapshot =
+        args.part && args.part > 1 && session.lastSnapshot
+          ? session.lastSnapshot
+          : await captureRedactedSnapshot(session.page, session);
+      return { outline: presentOutline(snapshot.outline, { part: args.part, full: args.full }) };
     });
   }
 
@@ -533,6 +581,87 @@ export function createService(config: Config): Service {
    * их называет вызывающий агент напрямую (он же видит дерево страницы),
    * поэтому здесь просто исполнение без планирования.
    */
+  /**
+   * Одно действие без снапшотов: подстановка variables, исполнение, ожидание
+   * тишины (settle.ts). Резолв адреса — по backendNodeId, XPath берётся из
+   * `resolveFrom` (последний снапшот, отданный агенту).
+   */
+  async function runStep(
+    session: BrowserSession,
+    method: SupportedAction,
+    elementId: string,
+    args: string[],
+    variables: Variables | undefined,
+    resolveFrom: A11ySnapshot,
+  ): Promise<{ navigated: boolean }> {
+    const req: ActionRequest = { elementId, method, arguments: substituteVariables(args, variables) };
+    const nav = watchNavigation(session.page);
+    const sinceGen = session.network.generation();
+    try {
+      await executeActionSafely(session.page, req, resolveFrom, session);
+      const kind = method === 'click' || method === 'press' ? 'pointer' : 'input';
+      return await settleAfterAction(session.page, session.network, nav, kind, sinceGen);
+    } finally {
+      nav.dispose();
+    }
+  }
+
+  /**
+   * Прогоняет шаги и снимает ОДИН снапшот «после» на всех. «До» — последний
+   * снапшот, отданный агенту, а не свежий захват: агент выбирал elementId по
+   * нему, а резолв идёт по backendNodeId (resolve.ts), так что сдвиг соседей
+   * с тех пор не мешает. Секреты, зарегистрированные только что, в нём ещё
+   * не могли оказаться — их на странице ещё нет.
+   */
+  async function performSteps(
+    session: BrowserSession,
+    steps: Array<{ method: SupportedAction; elementId: string; args: string[] }>,
+    variables?: Variables,
+  ): Promise<BrowserActResult> {
+    await assertSessionUrlSafe(session);
+    // До снапшота "до": значение могло попасть на страницу более ранним
+    // действием на этой же сессии, и даже "before" обязан прийти уже чистым.
+    registerSecrets(session, variables);
+    const before = session.lastSnapshot ?? (await captureRedactedSnapshot(session.page, session));
+    const urlBefore = session.page.url();
+
+    let navigated = false;
+    let done = 0;
+    let failed: BrowserActResult['failed'];
+    for (const step of steps) {
+      try {
+        const r = await runStep(session, step.method, step.elementId, step.args, variables, before);
+        navigated ||= r.navigated;
+        done += 1;
+      } catch (e) {
+        // Одиночное действие бросает как раньше; в пачке — отчитываемся, что
+        // успело выполниться, и показываем страницу после этого.
+        if (steps.length === 1) throw e;
+        failed = { step: done, error: e instanceof Error ? e.message : String(e) };
+        break;
+      }
+      // После перехода на другой документ адреса остальных шагов недействительны.
+      if (navigated && done < steps.length) {
+        failed = { step: done, error: 'страница перешла на новый документ — остальные шаги не выполнены, адреса устарели' };
+        break;
+      }
+    }
+
+    // Действие само могло быть навигацией (клик по ссылке, отправка формы).
+    // Тот же url уже проверен на входе в этот вызов.
+    const url = session.page.url();
+    if (url !== urlBefore) await assertSessionUrlSafe(session);
+    const after = await captureRedactedSnapshot(session.page, session);
+
+    const newDocument = navigated && stripHash(url) !== stripHash(urlBefore);
+    return {
+      changed: newDocument ? presentOutline(after.outline) : presentChanged(diffOutlines(before.outline, after.outline)),
+      ...(newDocument ? { navigated: true, url } : {}),
+      done,
+      ...(failed ? { failed } : {}),
+    };
+  }
+
   async function performAction(
     session: BrowserSession,
     method: SupportedAction,
@@ -540,34 +669,32 @@ export function createService(config: Config): Service {
     args: string[],
     variables?: Variables,
   ): Promise<BrowserActionResult> {
-    await assertSessionUrlSafe(session);
-    // До снапшота "до": значение могло попасть на страницу более ранним
-    // действием на этой же сессии, и даже "before" обязан прийти уже чистым.
-    registerSecrets(session, variables);
-    // "До" — последний снапшот, отданный агенту, а не свежий захват: агент
-    // выбирал elementId по нему, а резолв идёт по backendNodeId (resolve.ts),
-    // так что сдвиг соседей с тех пор не мешает. Экономит полный захват
-    // дерева на каждом действии. Секреты, зарегистрированные только что,
-    // в нём ещё не могли оказаться — их на странице ещё нет.
-    const before = session.lastSnapshot ?? (await captureRedactedSnapshot(session.page, session));
-    const urlBefore = session.page.url();
+    const { done: _done, failed: _failed, ...result } = await performSteps(session, [{ method, elementId, args }], variables);
+    return result;
+  }
 
-    const req: ActionRequest = { elementId, method, arguments: substituteVariables(args, variables) };
-    const nav = watchNavigation(session.page);
-    const sinceGen = session.network.generation();
-    try {
-      await executeActionSafely(session.page, req, before, session);
-      const kind = method === 'click' || method === 'press' ? 'pointer' : 'input';
-      await settleAfterAction(session.page, session.network, nav, kind, sinceGen);
-    } finally {
-      nav.dispose();
-    }
-    // Действие само могло быть навигацией (клик по ссылке, отправка формы).
-    // Тот же url уже проверен на входе в этот вызов.
-    if (session.page.url() !== urlBefore) await assertSessionUrlSafe(session);
-    const after = await captureRedactedSnapshot(session.page, session);
+  const ACT_METHODS: Record<BrowserActStep['action'], SupportedAction> = {
+    click: 'click',
+    hover: 'hover',
+    fill: 'fill',
+    type: 'type',
+    press: 'press',
+    select: 'selectOptionFromDropdown',
+    scroll: 'scrollTo',
+  };
 
-    return { changed: diffOutlines(before.outline, after.outline) };
+  async function browserAct(args: { sessionId: string; actions: BrowserActStep[]; variables?: Variables }): Promise<BrowserActResult> {
+    const steps = args.actions.map((a) => ({
+      method: ACT_METHODS[a.action],
+      elementId: a.elementId,
+      args:
+        a.action === 'fill' || a.action === 'type' ? [a.text]
+        : a.action === 'press' ? [a.key]
+        : a.action === 'select' ? [a.value]
+        : a.action === 'scroll' ? [a.percent]
+        : [],
+    }));
+    return withSession(args.sessionId, (session) => performSteps(session, steps, args.variables));
   }
 
   async function browserClick(args: { sessionId: string; elementId: string }): Promise<BrowserActionResult> {
@@ -629,6 +756,7 @@ export function createService(config: Config): Service {
     },
     browserOpen,
     browserSnapshot,
+    browserAct,
     browserClick,
     browserHover,
     browserFill,

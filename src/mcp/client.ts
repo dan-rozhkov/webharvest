@@ -14,6 +14,13 @@ export interface BrowserSnapshotResult {
 
 export interface BrowserActionResult {
   changed: string;
+  navigated?: boolean;
+  url?: string;
+}
+
+export interface BrowserActResult extends BrowserActionResult {
+  done: number;
+  failed?: { step: number; error: string };
 }
 
 interface ErrorBody { error?: { code?: ErrorCode; message?: string; detail?: Record<string, unknown> } }
@@ -83,6 +90,7 @@ export function createDaemonClient(baseUrl: string) {
     search: async (body: unknown) => (await call<{ results: SearchResult[] }>('/search', body)).results,
     browserOpen: (body: unknown) => call<BrowserOpenResult>('/browser/open', body, BROWSER_TIMEOUT_MS),
     browserSnapshot: (body: unknown) => call<BrowserSnapshotResult>('/browser/snapshot', body, BROWSER_TIMEOUT_MS),
+    browserAct: (body: unknown) => call<BrowserActResult>('/browser/act', body, BROWSER_TIMEOUT_MS),
     browserClick: (body: unknown) => call<BrowserActionResult>('/browser/click', body, BROWSER_TIMEOUT_MS),
     browserHover: (body: unknown) => call<BrowserActionResult>('/browser/hover', body, BROWSER_TIMEOUT_MS),
     browserFill: (body: unknown) => call<BrowserActionResult>('/browser/fill', body, BROWSER_TIMEOUT_MS),

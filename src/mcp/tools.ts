@@ -57,11 +57,54 @@ export const TOOL_DEFINITIONS = [
     description:
       'Возвращает свежее дерево той же открытой страницы, не выполняя никакого действия. ' +
       'Используй, чтобы посмотреть на текущее состояние страницы: после навигации, которую не отследить ' +
-      `дифом действия, или просто чтобы свериться перед следующим шагом. ${ELEMENT_ID_HINT}`,
+      `дифом действия, или просто чтобы свериться перед следующим шагом. ${ELEMENT_ID_HINT} ` +
+      'Большое дерево приходит в компактном виде и частями — следующую часть проси через part.',
     inputSchema: {
       type: 'object',
-      properties: { sessionId: { type: 'string', description: 'id сессии из browser_open' } },
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        part: { type: 'number', description: 'Номер части большого дерева (с 1), из подписи под предыдущей частью' },
+        full: { type: 'boolean', description: 'Полное дерево без компактного вида и деления на части — только если без него никак' },
+      },
       required: ['sessionId'],
+    },
+  },
+  {
+    name: 'browser_act',
+    description:
+      'Выполняет несколько действий подряд за один вызов (до 10) и возвращает, что изменилось на странице ' +
+      'после всех. Используй, когда следующие шаги известны заранее: заполнить несколько полей формы и ' +
+      'нажать отправку — один вызов вместо пяти. Адреса всех шагов берутся из последнего снапшота этой ' +
+      'сессии. Останавливается на первой ошибке или переходе на новую страницу и говорит, сколько шагов ' +
+      'выполнено. Секреты — плейсхолдерами %имя% в text и значениями в variables, как у browser_fill.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: { type: 'string', description: 'id сессии из browser_open' },
+        actions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 10,
+          description: 'Шаги по порядку',
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['click', 'hover', 'fill', 'type', 'press', 'select', 'scroll'] },
+              elementId: { type: 'string', description: 'Адрес элемента из последнего снапшота, например 0-18372' },
+              text: { type: 'string', description: 'Для fill/type: значение поля; секреты — плейсхолдером %имя%' },
+              key: { type: 'string', description: 'Для press: клавиша (Enter, Escape, Tab…)' },
+              value: { type: 'string', description: 'Для select: видимая подпись опции' },
+              percent: { type: 'string', description: 'Для scroll: доля прокрутки, например 50%' },
+            },
+            required: ['action', 'elementId'],
+          },
+        },
+        variables: {
+          type: 'object',
+          description: 'Значения плейсхолдеров из text: ключ — имя без %, значение — то, что реально ввести',
+        },
+      },
+      required: ['sessionId', 'actions'],
     },
   },
   {
@@ -254,7 +297,7 @@ export async function handleBrowserOpen(
 
 export async function handleBrowserSnapshot(
   client: DaemonClient,
-  args: { sessionId: string },
+  args: { sessionId: string; part?: number; full?: boolean },
 ): Promise<string> {
   try {
     const r = await client.browserSnapshot(args);
@@ -264,8 +307,26 @@ export async function handleBrowserSnapshot(
   }
 }
 
-function formatChanged(changed: string): string {
-  return changed ? `Сделано. На странице появилось:\n${changed}` : 'Сделано. Видимых изменений на странице нет.';
+function formatChanged(r: { changed: string; navigated?: boolean; url?: string }): string {
+  if (r.navigated) return `Сделано. Открылась новая страница ${r.url ?? ''}\n\nДерево страницы:\n${r.changed}`;
+  return r.changed ? `Сделано. На странице появилось:\n${r.changed}` : 'Сделано. Видимых изменений на странице нет.';
+}
+
+export async function handleBrowserAct(
+  client: DaemonClient,
+  args: { sessionId: string; actions: unknown[]; variables?: Record<string, string> },
+): Promise<string> {
+  try {
+    const r = await client.browserAct(args);
+    const total = args.actions.length;
+    if (!r.failed) return formatChanged(r).replace(/^Сделано\./, `Сделано (${total} из ${total}).`);
+    const head = `Выполнено шагов: ${r.done} из ${total}. Шаг ${r.failed.step + 1} не удался: ${r.failed.error}`;
+    const page = r.navigated ? `Открылась новая страница ${r.url ?? ''}\n\nДерево страницы:\n${r.changed}`
+      : r.changed ? `На странице появилось:\n${r.changed}` : 'Видимых изменений на странице нет.';
+    return `${head}\n\n${page}`;
+  } catch (e) {
+    return explain(e);
+  }
 }
 
 export async function handleBrowserClick(
@@ -273,7 +334,7 @@ export async function handleBrowserClick(
   args: { sessionId: string; elementId: string },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserClick(args)).changed);
+    return formatChanged(await client.browserClick(args));
   } catch (e) {
     return explain(e);
   }
@@ -284,7 +345,7 @@ export async function handleBrowserHover(
   args: { sessionId: string; elementId: string },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserHover(args)).changed);
+    return formatChanged(await client.browserHover(args));
   } catch (e) {
     return explain(e);
   }
@@ -295,7 +356,7 @@ export async function handleBrowserFill(
   args: { sessionId: string; elementId: string; text: string; variables?: Record<string, string> },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserFill(args)).changed);
+    return formatChanged(await client.browserFill(args));
   } catch (e) {
     return explain(e);
   }
@@ -306,7 +367,7 @@ export async function handleBrowserType(
   args: { sessionId: string; elementId: string; text: string; variables?: Record<string, string> },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserType(args)).changed);
+    return formatChanged(await client.browserType(args));
   } catch (e) {
     return explain(e);
   }
@@ -317,7 +378,7 @@ export async function handleBrowserPress(
   args: { sessionId: string; elementId: string; key: string },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserPress(args)).changed);
+    return formatChanged(await client.browserPress(args));
   } catch (e) {
     return explain(e);
   }
@@ -328,7 +389,7 @@ export async function handleBrowserSelect(
   args: { sessionId: string; elementId: string; value: string },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserSelect(args)).changed);
+    return formatChanged(await client.browserSelect(args));
   } catch (e) {
     return explain(e);
   }
@@ -339,7 +400,7 @@ export async function handleBrowserScroll(
   args: { sessionId: string; elementId: string; percent: string },
 ): Promise<string> {
   try {
-    return formatChanged((await client.browserScroll(args)).changed);
+    return formatChanged(await client.browserScroll(args));
   } catch (e) {
     return explain(e);
   }

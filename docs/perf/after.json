@@ -1,0 +1,128 @@
+[
+  {
+    "name": "open form",
+    "p50": 202,
+    "p95": 204,
+    "kb": 5.7
+  },
+  {
+    "name": "snapshot form",
+    "p50": 4,
+    "p95": 4,
+    "kb": 5.7
+  },
+  {
+    "name": "fill",
+    "p50": 83,
+    "p95": 90
+  },
+  {
+    "name": "select",
+    "p50": 76,
+    "p95": 79
+  },
+  {
+    "name": "click (local DOM change)",
+    "p50": 134,
+    "p95": 137,
+    "ok": "5/5"
+  },
+  {
+    "name": "click (fetch 300ms → DOM)",
+    "p50": 437,
+    "p95": 442,
+    "ok": "5/5"
+  },
+  {
+    "name": "press Enter (submit)",
+    "p50": 124,
+    "p95": 127,
+    "ok": "5/5"
+  },
+  {
+    "name": "scroll",
+    "p50": 79,
+    "p95": 81
+  },
+  {
+    "name": "click link (navigation)",
+    "p50": 149,
+    "p95": 153,
+    "ok": "5/5"
+  },
+  {
+    "name": "act: fill+select+submit (1 call)",
+    "p50": 272,
+    "p95": 280,
+    "ok": "5/5"
+  },
+  {
+    "name": "open busy",
+    "p50": 1111,
+    "p95": 1122
+  },
+  {
+    "name": "click (busy page)",
+    "p50": 142,
+    "p95": 165,
+    "ok": "5/5"
+  },
+  {
+    "name": "open spa",
+    "p50": 497,
+    "p95": 510,
+    "ok": "5/5"
+  },
+  {
+    "name": "open wikipedia-web",
+    "p50": 506,
+    "p95": 576,
+    "kb": 23.6
+  },
+  {
+    "name": "snapshot wikipedia-web",
+    "p50": 196,
+    "p95": 205
+  },
+  {
+    "name": "open github-repo",
+    "p50": 278,
+    "p95": 294,
+    "kb": 23.6
+  },
+  {
+    "name": "snapshot github-repo",
+    "p50": 46,
+    "p95": 46
+  },
+  {
+    "name": "scrape wikipedia-web",
+    "p50": 2388,
+    "p95": 2526,
+    "kb": 170.9
+  },
+  {
+    "name": "scrape mdn-fetch",
+    "p50": 424,
+    "p95": 480,
+    "kb": 31.4
+  },
+  {
+    "name": "scrape hn-front",
+    "p50": 264,
+    "p95": 269,
+    "kb": 15.9
+  },
+  {
+    "name": "scrape github-repo",
+    "p50": 890,
+    "p95": 937,
+    "kb": 18.5
+  },
+  {
+    "name": "scrape spa (browser escalation)",
+    "p50": 559,
+    "p95": 568,
+    "ok": "5/5"
+  }
+]

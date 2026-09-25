@@ -10,6 +10,7 @@ import {
   handleSearch,
   handleBrowserOpen,
   handleBrowserSnapshot,
+  handleBrowserAct,
   handleBrowserClick,
   handleBrowserHover,
   handleBrowserFill,
@@ -44,6 +45,7 @@ export function createMcpServer(client: DaemonClient): Server {
       : req.params.name === 'search' ? await handleSearch(client, args as never)
       : req.params.name === 'browser_open' ? await handleBrowserOpen(client, args as never)
       : req.params.name === 'browser_snapshot' ? await handleBrowserSnapshot(client, args as never)
+      : req.params.name === 'browser_act' ? await handleBrowserAct(client, args as never)
       : req.params.name === 'browser_click' ? await handleBrowserClick(client, args as never)
       : req.params.name === 'browser_hover' ? await handleBrowserHover(client, args as never)
       : req.params.name === 'browser_fill' ? await handleBrowserFill(client, args as never)

@@ -113,6 +113,7 @@ describe('dist/mcp/index.js spawned as the real binary', () => {
     const toolsList = responses.find((r) => r.id === 2);
     expect(toolsList).toBeDefined();
     expect(toolsList?.result?.tools?.map((t) => t.name).sort()).toEqual([
+      'browser_act',
       'browser_click',
       'browser_close',
       'browser_fill',
@@ -133,6 +134,7 @@ describe('dist/mcp/index.js spawned as the real binary', () => {
     const toolsList = responses.find((r) => r.id === 2);
     expect(toolsList).toBeDefined();
     expect(toolsList?.result?.tools?.map((t) => t.name).sort()).toEqual([
+      'browser_act',
       'browser_click',
       'browser_close',
       'browser_fill',

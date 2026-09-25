@@ -24,6 +24,7 @@ const client = {
 describe('TOOL_DEFINITIONS', () => {
   it('объявляет scrape, search и инструменты browser use', () => {
     expect(TOOL_DEFINITIONS.map((t) => t.name).sort()).toEqual([
+      'browser_act',
       'browser_click',
       'browser_close',
       'browser_fill',

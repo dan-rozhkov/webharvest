@@ -174,6 +174,20 @@ async function main(): Promise<void> {
       await timed('click link (navigation)', () => S.browserClick({ sessionId: sid, elementId: idOf(outline, /link: Next page/) }), (r) => ({ ok: /Page two/.test(r.changed) }));
       await S.browserClose({ sessionId: sid });
 
+      // --- та же форма пачкой: fill + select + submit одним вызовом ---
+      if (S.browserAct) {
+        const o2 = await S.browserOpen({ url: `${base}/form` });
+        await timed('act: fill+select+submit (1 call)', () => S.browserAct({
+          sessionId: o2.sessionId,
+          actions: [
+            { action: 'fill', elementId: idOf(o2.outline, /textbox: Name/), text: 'Bob' },
+            { action: 'select', elementId: idOf(o2.outline, /select/), value: 'Georgia' },
+            { action: 'press', elementId: idOf(o2.outline, /textbox: Name/), key: 'Enter' },
+          ],
+        }), (r) => ({ ok: /Submitted Bob/.test(r.changed) }));
+        await S.browserClose({ sessionId: o2.sessionId });
+      }
+
       // --- страница, где networkidle не наступает ---
       const busy = await timed('open busy', () => S.browserOpen({ url: `${base}/busy` }));
       await timed('click (busy page)', () => S.browserClick({ sessionId: busy.sessionId, elementId: idOf(busy.outline, /button: Do it/) }), (r) => ({ ok: /Clicked busy/.test(r.changed) }));
