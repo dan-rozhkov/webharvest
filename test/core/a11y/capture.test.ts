@@ -58,28 +58,60 @@ describe('a11y/capture: captureSnapshot', () => {
     await expect(captureSnapshot(page)).rejects.toThrow(/домен недоступен/);
   });
 
-  it('всегда детачит CDP-сессию, даже когда дерево пустое', async () => {
-    let detached = 0;
+  it('держит одну CDP-сессию на страницу и не открывает новую на каждый снапшот', async () => {
+    let opened = 0;
     const cdp = {
       send: async (method: string) => {
-        if (method === 'DOM.enable' || method === 'Accessibility.enable') return {};
         if (method === 'DOM.getDocument') {
           return { root: { nodeName: '#document', backendNodeId: 1, childNodeCount: 0 } };
         }
-        if (method === 'Accessibility.getFullAXTree') return { nodes: [] };
-        throw new Error(`неожиданный вызов ${method}`);
+        if (method === 'Accessibility.getFullAXTree') {
+          return { nodes: [{ nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'T' }, backendDOMNodeId: 1 }] };
+        }
+        return {};
       },
-      detach: async () => {
-        detached++;
-      },
+      detach: async () => {},
     };
     const page = {
       context: () => ({
-        newCDPSession: async () => cdp,
+        newCDPSession: async () => {
+          opened++;
+          return cdp;
+        },
       }),
+      isClosed: () => false,
     } as unknown as Page;
 
-    await expect(captureSnapshot(page)).rejects.toBeInstanceOf(HarvestError);
-    expect(detached).toBe(1);
+    await captureSnapshot(page);
+    await captureSnapshot(page);
+    expect(opened).toBe(1);
+  });
+
+  it('пересоздаёт отвалившуюся CDP-сессию один раз', async () => {
+    let opened = 0;
+    const page = {
+      context: () => ({
+        newCDPSession: async () => {
+          const generation = ++opened;
+          return {
+            send: async (method: string) => {
+              if (generation === 1 && method === 'DOM.getDocument') throw new Error('Target page, context or browser has been closed');
+              if (method === 'DOM.getDocument') {
+                return { root: { nodeName: '#document', backendNodeId: 1, childNodeCount: 0 } };
+              }
+              if (method === 'Accessibility.getFullAXTree') {
+                return { nodes: [{ nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'T' }, backendDOMNodeId: 1 }] };
+              }
+              return {};
+            },
+            detach: async () => {},
+          };
+        },
+      }),
+      isClosed: () => false,
+    } as unknown as Page;
+
+    await expect(captureSnapshot(page)).resolves.toMatchObject({ outline: expect.stringContaining('RootWebArea') });
+    expect(opened).toBe(2);
   });
 });

@@ -128,8 +128,21 @@ export function assertAllowedUrl(input: string): URL {
 // scope for a personal tool. Do not read the code below as if it closes
 // this gap; it only shrinks the window and raises the bar from "always
 // works" to "wins a very fast DNS race".
+/**
+ * Короткий кэш ПОЛОЖИТЕЛЬНЫХ вердиктов: browser use проверяет url страницы
+ * на входе и после каждого действия, scrape — на каждом редиректе, и всё это
+ * обычно один и тот же хост. Окно гонки с DNS rebinding (см. выше) кэш не
+ * расширяет по существу — оно и так открыто между этой проверкой и резолвом
+ * внутри undici/Playwright; отрицательные вердикты не кэшируются вовсе.
+ */
+const PUBLIC_HOST_TTL_MS = 30_000;
+const PUBLIC_HOST_MAX = 512;
+const publicHosts = new Map<string, number>();
+
 export async function assertPublicHost(hostname: string): Promise<void> {
   const host = stripTrailingDot(hostname.toLowerCase().replace(/^\[|\]$/g, ''));
+  const cachedUntil = publicHosts.get(host);
+  if (cachedUntil !== undefined && cachedUntil > Date.now()) return;
   if (isIP(host)) {
     if (isPrivateAddress(host)) {
       throw new HarvestError('invalid_url', `Приватный адрес запрещён: ${hostname}`);
@@ -147,4 +160,6 @@ export async function assertPublicHost(hostname: string): Promise<void> {
       throw new HarvestError('invalid_url', `${hostname} резолвится в приватный адрес ${address}`);
     }
   }
+  if (publicHosts.size >= PUBLIC_HOST_MAX) publicHosts.clear();
+  publicHosts.set(host, Date.now() + PUBLIC_HOST_TTL_MS);
 }

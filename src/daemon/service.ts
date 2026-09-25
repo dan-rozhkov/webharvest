@@ -13,6 +13,7 @@ import type { SearchProvider, SearchResult } from '../core/search/types.js';
 import { truncateMarkdown, type ScrapePayload } from '../core/format.js';
 import { createSessionPool, type BrowserSession } from '../core/session-pool.js';
 import { captureSnapshot } from '../core/a11y/capture.js';
+import { settleAfterAction, watchNavigation } from '../core/settle.js';
 import { diffOutlines } from '../core/a11y/diff.js';
 import { redactSecrets, redactOutlineSecrets } from '../core/a11y/format.js';
 import type { A11ySnapshot } from '../core/a11y/types.js';
@@ -293,13 +294,6 @@ export function createService(config: Config): Service {
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'sessions') : undefined,
   });
 
-  /** Пауза на перерисовку после действия — без неё диф пуст на всём, что
-   *  рисуется через JS. Тот же приём, что doRender в core/browser.ts. */
-  async function settleAfterAction(page: Page): Promise<void> {
-    await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => {});
-    await page.waitForTimeout(300);
-  }
-
   async function assertSessionUrlSafe(session: BrowserSession): Promise<void> {
     await assertSessionUrlSafePure(session, config.allowPrivate, (id) => sessions.close(id));
   }
@@ -312,7 +306,11 @@ export function createService(config: Config): Service {
    * уходит вызывающему агенту. Один снапшот — один проход редактирования.
    */
   async function captureRedactedSnapshot(page: Page, session: BrowserSession): Promise<A11ySnapshot> {
-    return redactSnapshot(await captureSnapshot(page), session.secrets);
+    const snapshot = redactSnapshot(await captureSnapshot(page), session.secrets);
+    // Всё, что захвачено, уходит агенту (open/snapshot/действие) — значит это
+    // и есть «последнее, что он видел», база дифа следующего действия.
+    session.lastSnapshot = snapshot;
+    return snapshot;
   }
 
   /**
@@ -546,12 +544,27 @@ export function createService(config: Config): Service {
     // До снапшота "до": значение могло попасть на страницу более ранним
     // действием на этой же сессии, и даже "before" обязан прийти уже чистым.
     registerSecrets(session, variables);
-    const before = await captureRedactedSnapshot(session.page, session);
+    // "До" — последний снапшот, отданный агенту, а не свежий захват: агент
+    // выбирал elementId по нему, а резолв идёт по backendNodeId (resolve.ts),
+    // так что сдвиг соседей с тех пор не мешает. Экономит полный захват
+    // дерева на каждом действии. Секреты, зарегистрированные только что,
+    // в нём ещё не могли оказаться — их на странице ещё нет.
+    const before = session.lastSnapshot ?? (await captureRedactedSnapshot(session.page, session));
+    const urlBefore = session.page.url();
 
     const req: ActionRequest = { elementId, method, arguments: substituteVariables(args, variables) };
-    await executeActionSafely(session.page, req, before, session);
-    await settleAfterAction(session.page);
-    await assertSessionUrlSafe(session);
+    const nav = watchNavigation(session.page);
+    const sinceGen = session.network.generation();
+    try {
+      await executeActionSafely(session.page, req, before, session);
+      const kind = method === 'click' || method === 'press' ? 'pointer' : 'input';
+      await settleAfterAction(session.page, session.network, nav, kind, sinceGen);
+    } finally {
+      nav.dispose();
+    }
+    // Действие само могло быть навигацией (клик по ссылке, отправка формы).
+    // Тот же url уже проверен на входе в этот вызов.
+    if (session.page.url() !== urlBefore) await assertSessionUrlSafe(session);
     const after = await captureRedactedSnapshot(session.page, session);
 
     return { changed: diffOutlines(before.outline, after.outline) };

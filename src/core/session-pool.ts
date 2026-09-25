@@ -10,6 +10,8 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
 import { waitForChallengeResolution } from './challenge.js';
+import { trackNetwork, waitForNetworkQuiet, LOAD_QUIET_CAP_MS, LOAD_QUIET_MS, type NetworkTracker } from './settle.js';
+import type { A11ySnapshot } from './a11y/types.js';
 
 export interface BrowserSession {
   id: string;
@@ -38,6 +40,16 @@ export interface BrowserSession {
    * с картой при закрытии/вытеснении сессии — тем же путём, что и сама Page.
    */
   secrets: Map<string, Set<string>>;
+  /** Счётчик запросов страницы — для ожидания тишины после действий (settle.ts).
+   *  Вешается до первого goto и живёт вместе со страницей. */
+  network: NetworkTracker;
+  /**
+   * Последний снапшот, отданный агенту (open/snapshot/действие). Служит базой
+   * дифа следующего действия вместо повторного захвата «до»: агент выбирал
+   * элемент именно по нему, и диф «что изменилось с того, что ты видел»
+   * честнее дифа от снапшота, снятого через секунды после.
+   */
+  lastSnapshot?: A11ySnapshot;
 }
 
 export interface SessionPoolOptions {
@@ -218,6 +230,11 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
 
       const ctx = await ensureContext();
       const page = await ctx.newPage();
+      const network = trackNetwork(page);
+      // Действия (click/fill/…) без явного таймаута ждут actionability по
+      // дефолту Playwright — 30 с: перекрытый оверлеем элемент держал агента
+      // полминуты. Явные таймауты (goto, ожидания) этот дефолт не трогает.
+      page.setDefaultTimeout(8_000);
       try {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         // Turnstile/Cloudflare: не отдавать агенту страницу-челлендж. Ждём
@@ -229,6 +246,10 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
         if (!resolved) {
           throw new HarvestError('blocked', `Cloudflare/Turnstile не решился за 20с: ${url}`);
         }
+        // DOMContentLoaded — ещё не страница: SPA дорисовывает её данными
+        // после первого fetch. Короткое окно тишины экономит агенту лишний
+        // browser_snapshot (а это целый раундтрип модели).
+        await waitForNetworkQuiet(page, network, { sinceGen: 0, quietMs: LOAD_QUIET_MS, capMs: LOAD_QUIET_CAP_MS });
       } catch (e) {
         await page.close().catch(() => {});
         // Уже сформированная HarvestError (например, blocked выше) — не
@@ -247,6 +268,7 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
         lastUsedAt: Date.now(),
         seq: nextSeq(),
         secrets: new Map(),
+        network,
         // Занята с момента создания: до возврата вызывающему код в
         // daemon/service.ts ещё сделает пост-навигационную проверку url и
         // снимет первый снапшот — за это время сессия так же уязвима для

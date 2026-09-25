@@ -1,18 +1,60 @@
 /**
  * Превращение адреса из снапшота в живой элемент.
  *
- * Адресация позиционная: `encodedId` — это не ссылка на конкретный
- * DOM-объект, а закодированный путь от корня документа (наш диалект XPath,
- * см. `resolveByXPath` ниже). Именно поэтому резолв переживает пересоздание
- * узла — `/html[1]/body[1]/button[1]` остаётся верным адресом, даже когда
- * сам `<button>` уже другой DOM-объект, лишь бы структура вокруг него не
- * изменилась. Раньше здесь была ещё проверка через `DOM.resolveNode` по
- * `backendNodeId` — её убрали: элемент в любом случае поднимается по этому
- * же XPath, так что CDP-проверка ничего не решала, только дублировала код.
+ * Сначала — точно по `backendNodeId` через CDP (`resolveByBackendId`): адрес
+ * указывает ровно на тот узел, который агент видел, даже если соседи с тех
+ * пор сдвинулись. Это и позволяет не снимать перед каждым действием свежий
+ * снапшот «до» — берётся последний отданный агенту (см. service.ts).
+ *
+ * Запасной путь — позиционный XPath из снапшота (наш диалект, см.
+ * `resolveByXPath` ниже): он переживает пересоздание узла фреймворком —
+ * `/html[1]/body[1]/button[1]` остаётся верным адресом, даже когда сам
+ * `<button>` уже другой DOM-объект, — и нужен для same-process iframe, куда
+ * `page.$` не заглядывает.
  */
 import type { ElementHandle, Page } from 'playwright';
 import type { A11ySnapshot } from './types.js';
 import { HarvestError } from '../errors.js';
+import { withPageCdp } from './capture.js';
+
+const REF_ATTR = 'data-wh-ref';
+let refCounter = 0;
+
+/**
+ * Помечает узел по backendNodeId временным атрибутом и поднимает его через
+ * `page.$` (CSS-движок Playwright проходит открытые shadow root). Текстовый
+ * узел (StaticText в дереве) заменяется своим родителем — кликают по нему.
+ * `null` — узла больше нет или он во фрейме, недоступном из главного
+ * документа: тогда решает XPath.
+ */
+async function resolveByBackendId(page: Page, backendNodeId: number): Promise<ResolvedElement | null> {
+  return withPageCdp(page, async ({ sender }) => {
+    let objectId: string | undefined;
+    try {
+      ({ object: { objectId } } = await sender.send<{ object: { objectId?: string } }>('DOM.resolveNode', { backendNodeId }));
+    } catch {
+      return null;
+    }
+    if (!objectId) return null;
+    const token = `${process.pid}-${++refCounter}`;
+    const mark = (fn: string, args: unknown[]) =>
+      sender.send('Runtime.callFunctionOn', { objectId, functionDeclaration: fn, arguments: args.map((value) => ({ value })) });
+    try {
+      await mark(
+        `function (a, t) { const el = this.nodeType === 1 ? this : this.parentElement; if (el) el.setAttribute(a, t); }`,
+        [REF_ATTR, token],
+      );
+      const handle = await page.$(`[${REF_ATTR}="${token}"]`);
+      return handle as ResolvedElement | null;
+    } finally {
+      await mark(
+        `function (a) { const el = this.nodeType === 1 ? this : this.parentElement; if (el) el.removeAttribute(a); }`,
+        [REF_ATTR],
+      ).catch(() => {});
+      await sender.send('Runtime.releaseObject', { objectId }).catch(() => {});
+    }
+  }).catch(() => null);
+}
 
 export type ResolvedElement = ElementHandle<HTMLElement | SVGElement>;
 
@@ -115,13 +157,16 @@ export async function resolveElement(
   encodedId: string,
   snapshot: A11ySnapshot,
 ): Promise<ResolvedElement> {
-  const { frameOrdinal } = parseEncodedId(encodedId);
+  const { frameOrdinal, backendNodeId } = parseEncodedId(encodedId);
   if (frameOrdinal !== 0) {
     throw new HarvestError(
       'not_found',
       `Адрес ${encodedId} указывает на кросс-доменный фрейм — в этой версии они не поддержаны`,
     );
   }
+
+  const exact = await resolveByBackendId(page, backendNodeId);
+  if (exact) return exact;
 
   const xpath = snapshot.xpathMap[encodedId];
   if (!xpath) {

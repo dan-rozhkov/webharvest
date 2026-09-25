@@ -16,6 +16,7 @@ const fakePage = () => ({
   locator: vi.fn(() => ({ count: vi.fn(async () => 0) })),
   title: vi.fn(async () => 'Test Page'),
   waitForTimeout: vi.fn(async () => {}),
+  setDefaultTimeout: vi.fn(),
 });
 
 const fakeContext = () => ({
@@ -43,6 +44,16 @@ vi.mock('playwright', () => ({
 const challengeMocks = vi.hoisted(() => ({ waitForChallengeResolution: vi.fn(async () => true) }));
 vi.mock('../../src/core/challenge.js', () => ({
   waitForChallengeResolution: challengeMocks.waitForChallengeResolution,
+}));
+
+// Ожидание тишины сети после open() (settle.ts) крутится на настоящем
+// setTimeout и под vi.useFakeTimers() никогда бы не проснулось. Сам
+// settle.ts проверяется отдельно; здесь — только оркестрация пула.
+vi.mock('../../src/core/settle.js', () => ({
+  trackNetwork: () => ({ generation: () => 0, pendingSince: () => 0, lastActivitySince: () => 0, dispose: () => {} }),
+  waitForNetworkQuiet: async () => {},
+  LOAD_QUIET_MS: 0,
+  LOAD_QUIET_CAP_MS: 0,
 }));
 
 const { chromium } = await import('playwright');
