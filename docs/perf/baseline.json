@@ -1,0 +1,122 @@
+[
+  {
+    "name": "open form",
+    "p50": 97,
+    "p95": 107,
+    "kb": 5.7
+  },
+  {
+    "name": "snapshot form",
+    "p50": 6,
+    "p95": 10,
+    "kb": 5.7
+  },
+  {
+    "name": "fill",
+    "p50": 789,
+    "p95": 803
+  },
+  {
+    "name": "select",
+    "p50": 329,
+    "p95": 349
+  },
+  {
+    "name": "click (local DOM change)",
+    "p50": 364,
+    "p95": 369,
+    "ok": "5/5"
+  },
+  {
+    "name": "click (fetch 300ms → DOM)",
+    "p50": 352,
+    "p95": 361,
+    "ok": "5/5"
+  },
+  {
+    "name": "press Enter (submit)",
+    "p50": 331,
+    "p95": 333,
+    "ok": "5/5"
+  },
+  {
+    "name": "scroll",
+    "p50": 327,
+    "p95": 331
+  },
+  {
+    "name": "click link (navigation)",
+    "p50": 876,
+    "p95": 882,
+    "ok": "5/5"
+  },
+  {
+    "name": "open busy",
+    "p50": 110,
+    "p95": 116
+  },
+  {
+    "name": "click (busy page)",
+    "p50": 1353,
+    "p95": 1357,
+    "ok": "5/5"
+  },
+  {
+    "name": "open spa",
+    "p50": 111,
+    "p95": 116,
+    "ok": "0/5"
+  },
+  {
+    "name": "open wikipedia-web",
+    "p50": 365,
+    "p95": 488,
+    "kb": 368.8
+  },
+  {
+    "name": "snapshot wikipedia-web",
+    "p50": 203,
+    "p95": 234
+  },
+  {
+    "name": "open github-repo",
+    "p50": 167,
+    "p95": 184,
+    "kb": 82.4
+  },
+  {
+    "name": "snapshot github-repo",
+    "p50": 48,
+    "p95": 53
+  },
+  {
+    "name": "scrape wikipedia-web",
+    "p50": 2382,
+    "p95": 2486,
+    "kb": 170.9
+  },
+  {
+    "name": "scrape mdn-fetch",
+    "p50": 413,
+    "p95": 501,
+    "kb": 31.4
+  },
+  {
+    "name": "scrape hn-front",
+    "p50": 250,
+    "p95": 268,
+    "kb": 15.9
+  },
+  {
+    "name": "scrape github-repo",
+    "p50": 853,
+    "p95": 869,
+    "kb": 18.5
+  },
+  {
+    "name": "scrape spa (browser escalation)",
+    "p50": 31,
+    "p95": 31,
+    "ok": "0/5"
+  }
+]
