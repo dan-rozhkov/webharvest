@@ -8,6 +8,8 @@ describe('loadConfig', () => {
   const originalPort = process.env.WEBHARVEST_PORT;
   const originalBrowserChannel = process.env.WEBHARVEST_BROWSER_CHANNEL;
   const originalBrowserProfileDir = process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
+  const originalScrapeEngine = process.env.WEBHARVEST_SCRAPE_ENGINE;
+  const originalLightpandaBin = process.env.WEBHARVEST_LIGHTPANDA_BIN;
   let fakeHome: string;
 
   beforeEach(() => {
@@ -24,6 +26,10 @@ describe('loadConfig', () => {
     else process.env.WEBHARVEST_BROWSER_CHANNEL = originalBrowserChannel;
     if (originalBrowserProfileDir === undefined) delete process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
     else process.env.WEBHARVEST_BROWSER_PROFILE_DIR = originalBrowserProfileDir;
+    if (originalScrapeEngine === undefined) delete process.env.WEBHARVEST_SCRAPE_ENGINE;
+    else process.env.WEBHARVEST_SCRAPE_ENGINE = originalScrapeEngine;
+    if (originalLightpandaBin === undefined) delete process.env.WEBHARVEST_LIGHTPANDA_BIN;
+    else process.env.WEBHARVEST_LIGHTPANDA_BIN = originalLightpandaBin;
     vi.resetModules();
   });
 
@@ -104,6 +110,37 @@ describe('loadConfig', () => {
     const cfg = loadConfig();
     expect(cfg.browserChannel).toBe('chromium');
     expect(cfg.browserProfileDir).toBeNull();
+  });
+
+  it('движок scrape по умолчанию chromium, бинарь Lightpanda ищется в PATH', async () => {
+    delete process.env.WEBHARVEST_SCRAPE_ENGINE;
+    delete process.env.WEBHARVEST_LIGHTPANDA_BIN;
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    const c = loadConfig();
+    expect(c.scrapeEngine).toBe('chromium');
+    expect(c.lightpandaBin).toBe('lightpanda');
+  });
+
+  it('WEBHARVEST_SCRAPE_ENGINE и WEBHARVEST_LIGHTPANDA_BIN включают Lightpanda', async () => {
+    process.env.WEBHARVEST_SCRAPE_ENGINE = 'lightpanda';
+    process.env.WEBHARVEST_LIGHTPANDA_BIN = '/opt/lightpanda';
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    const c = loadConfig();
+    expect(c.scrapeEngine).toBe('lightpanda');
+    expect(c.lightpandaBin).toBe('/opt/lightpanda');
+  });
+
+  it('WEBHARVEST_SCRAPE_ENGINE с мусором падает громко, называя переменную и значение', async () => {
+    process.env.WEBHARVEST_SCRAPE_ENGINE = 'Lightpanda';
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(() => loadConfig()).toThrow(/WEBHARVEST_SCRAPE_ENGINE.*"Lightpanda"/);
+  });
+
+  it('scrapeEngine с мусором в config.json падает громко', async () => {
+    mkdirSync(join(fakeHome, '.webharvest'), { recursive: true });
+    writeFileSync(join(fakeHome, '.webharvest', 'config.json'), JSON.stringify({ scrapeEngine: 'firefox' }));
+    const { loadConfig } = await import('../../src/daemon/config.js');
+    expect(() => loadConfig()).toThrow(/scrapeEngine.*"firefox"/);
   });
 
   it('WEBHARVEST_BROWSER_CHANNEL=chrome задаёт канал системного Chrome', async () => {

@@ -30,3 +30,11 @@ StackOverflow не открылся обоим (антибот), producthunt.com
 Вывод: по скорости паритет (время уходит в сеть, а не в рендер), по памяти выигрыш в 5–50 раз,
 по полноте контента 93%. Имеет смысл как опциональный движок для `scrape` с фолбэком на Chromium
 при коротком тексте; основным для `browser_*` (скриншоты, геометрия) не годится.
+
+## Интеграция
+
+`WEBHARVEST_SCRAPE_ENGINE=lightpanda` (или `scrapeEngine` в config.json) делает Lightpanda
+основным движком scrape (`src/core/lightpanda.ts`, подключение CDP на каждый рендер), а
+Chromium-пул — запасным (`fallbackBrowser` в `src/core/fetcher.ts`). Повтор на Chromium:
+ошибка Lightpanda, челлендж, «нет текста» или текст короче 1000 символов. SSRF-отказ
+по finalUrl и `too_large` не повторяются.

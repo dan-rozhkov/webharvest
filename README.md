@@ -265,9 +265,21 @@ Environment variables override config file settings:
   between scrape and browser-use via two subdirectories (`<dir>/scrape` and
   `<dir>/sessions`) — two Chromium processes cannot share one `userDataDir`,
   hence the split.
+- `WEBHARVEST_SCRAPE_ENGINE` — `"chromium"` (default) | `"lightpanda"` — render
+  engine for `scrape`. With `"lightpanda"` pages are rendered by
+  [Lightpanda](https://github.com/lightpanda-io/browser) (a headless browser
+  without graphics, several times lighter on memory than Chromium). If
+  Lightpanda fails, hits a challenge, or returns less than 1000 characters of
+  text, the page is rendered again with Chromium, which only starts when needed.
+  Browser-use tools always run on Chromium. Measurements:
+  [docs/bench-lightpanda.md](docs/bench-lightpanda.md).
+- `WEBHARVEST_LIGHTPANDA_BIN` — path to the Lightpanda binary (default:
+  `lightpanda` in `PATH`). Install it with `brew tap lightpanda-io/browser &&
+  brew install lightpanda`, or download it from the
+  [releases page](https://github.com/lightpanda-io/browser/releases).
 
-The same keys can be set in `~/.webharvest/config.json` as `browserChannel`
-and `browserProfileDir`.
+The same keys can be set in `~/.webharvest/config.json` as `browserChannel`,
+`browserProfileDir`, `scrapeEngine` and `lightpandaBin`.
 
 Note: `host` and `allowPrivate` cannot be set from config.json for security reasons. The daemon always binds to `127.0.0.1` only.
 

@@ -25,6 +25,14 @@ export interface FetchResult {
 export interface FetcherDeps {
   queue: DomainQueue;
   browser: BrowserPool;
+  /** Запасной движок рендера. Если задан, `browser` считается основным, но
+   *  не полностью совместимым (Lightpanda): его отказ, челлендж или текст
+   *  короче `fallbackMinTextLength` повторяются на запасном (Chromium). */
+  fallbackBrowser?: BrowserPool;
+  /** Порог текста основного движка, ниже которого страница перепроверяется
+   *  на запасном. На бенчмарке Lightpanda недобирал текст именно на
+   *  страницах, где Chromium давал в разы больше. */
+  fallbackMinTextLength?: number;
   hints: DomainHints;
   httpTimeoutMs?: number;
   browserTimeoutMs?: number;
@@ -68,11 +76,24 @@ export function describeError(e: unknown, depth = 0): string {
   return nested.length ? `${head} [${nested.join('; ')}]` : head;
 }
 
+interface RenderContext {
+  challenge?: ReturnType<typeof detectChallenge>;
+  contentType?: string | null;
+  /** True when this render was selected BECAUSE deps.hints.needsBrowser()
+   *  was already true, not because this call is what earned the hint.
+   *  A success here must not re-mark the domain — DomainHints' TTL exists
+   *  to give a marked domain a fresh shot at the cheap HTTP path, and a
+   *  domain scraped at least once per TTL window would otherwise never
+   *  see that clock actually reach zero. */
+  skipHintUpdate?: boolean;
+}
+
 export function createFetcher(deps: FetcherDeps) {
   const httpTimeoutMs = deps.httpTimeoutMs ?? 10_000;
   const browserTimeoutMs = deps.browserTimeoutMs ?? 30_000;
   const maxBytes = deps.maxBytes ?? 5 * 1024 * 1024;
   const runExtract = deps.extract ?? extract;
+  const fallbackMinTextLength = deps.fallbackMinTextLength ?? 1000;
 
   /** Валидирует URL так же строго, как публичный вход: и синхронную проверку
    *  формы (assertAllowedUrl), и DNS-резолв (assertPublicHost). Вызывается и
@@ -287,17 +308,7 @@ export function createFetcher(deps: FetcherDeps) {
   async function renderViaBrowser(
     url: string,
     heldHosts: Set<string>,
-    context: {
-      challenge?: ReturnType<typeof detectChallenge>;
-      contentType?: string | null;
-      /** True when this render was selected BECAUSE deps.hints.needsBrowser()
-       *  was already true, not because this call is what earned the hint.
-       *  A success here must not re-mark the domain — DomainHints' TTL exists
-       *  to give a marked domain a fresh shot at the cheap HTTP path, and a
-       *  domain scraped at least once per TTL window would otherwise never
-       *  see that clock actually reach zero. */
-      skipHintUpdate?: boolean;
-    } = {},
+    context: RenderContext = {},
   ): Promise<FetchResult> {
     // Хост, чьё содержимое реально потребовало эскалации (URL после
     // HTTP-редиректов) — не обязательно исходный хост fetch(). Именно на
@@ -307,61 +318,9 @@ export function createFetcher(deps: FetcherDeps) {
     const targetHost = new URL(url).hostname;
 
     return withHostQueue(targetHost, heldHosts, async () => {
-      const rendered = await deps.browser.render(url, { timeoutMs: browserTimeoutMs });
-      // Браузер тоже может быть перенаправлен (в т.ч. на приватный адрес по
-      // цепочке редиректов внутри страницы) — finalUrl проверяем так же строго,
-      // как и HTTP-хопы.
-      await validate(rendered.finalUrl);
-
-      // extract() ДО проверки на челлендж: правило Turnstile-виджета решает,
-      // стена это или встроенная форма, по объёму извлечённого материала, а не
-      // по сырому тексту (стена внутри шаблона сайта приносит меню и подвал).
-      // Ниже извлечение всё равно нужно — порядок ничего не стоит.
-      const probe = await runExtract(rendered.html, rendered.finalUrl);
-
-      const stillChallenged = detectChallenge(rendered.html, {
-        proseTextLength: probe.proseTextLength,
-        hasFormField: probe.hasFormField,
-      });
-      if (stillChallenged) {
-        throw new HarvestError('blocked', `Страница закрыта защитой ${stillChallenged}: ${url}`, {
-          by: stillChallenged,
-        });
-      }
-
-      const verdict = shouldEscalate({
-        status: rendered.status,
-        contentType: 'text/html',
-        html: rendered.html,
-        extractedTextLength: probe.textLength,
-        extractedProseTextLength: probe.proseTextLength,
-        contentHasFormField: probe.hasFormField,
-      });
-
-      // Браузер — последняя инстанция. Если и он не дал текста, честно сообщаем,
-      // а не отдаём пустоту или заглушку как контент.
-      if (verdict.escalate) {
-        if (context.challenge) {
-          throw new HarvestError('blocked', `Страница закрыта защитой ${context.challenge}: ${url}`, {
-            by: context.challenge,
-          });
-        }
-        // Бот-статусы (403/429/503) без узнаваемой сигнатуры защиты — не
-        // "нет текста", а конкретный ответ сервера. Иначе стилизованная
-        // 403-страница со своим текстом сообщила бы агенту неправду:
-        // "на странице не нашлось читаемого текста", хотя текст там есть,
-        // просто origin явно отказал.
-        if (verdict.reason === 'status') {
-          throw new HarvestError('upstream_error', `Сервер вернул ошибку ${rendered.status}: ${url}`, {
-            status: rendered.status,
-          });
-        }
-        throw new HarvestError('not_html', `На странице не нашлось читаемого текста: ${url}`, {
-          reason: verdict.reason,
-          contentType: context.contentType ?? null,
-        });
-      }
-
+      const result = deps.fallbackBrowser
+        ? await renderWithFallback(url, context, deps.browser, deps.fallbackBrowser)
+        : await renderOnce(deps.browser, url, context);
       // Пишем hint только теперь, когда браузер реально спас контент, и
       // только если этот рендер сам заслужил hint, а не был выбран по уже
       // стоящему (см. skipHintUpdate) — иначе домен, который скрейпят чаще,
@@ -373,8 +332,90 @@ export function createFetcher(deps: FetcherDeps) {
       if (!context.skipHintUpdate) {
         deps.hints.markNeedsBrowser(targetHost);
       }
-      return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser', extracted: probe };
+      return result;
     });
+  }
+
+  /** Рендер основным движком; при его отказе, челлендже, «нет текста» или
+   *  слишком коротком тексте — повтор запасным. Ошибки, которые повтор не
+   *  исправит (SSRF по finalUrl, превышение размера), отдаются сразу. */
+  async function renderWithFallback(
+    url: string,
+    context: RenderContext,
+    primary: BrowserPool,
+    fallback: BrowserPool,
+  ): Promise<FetchResult> {
+    try {
+      const r = await renderOnce(primary, url, context);
+      if (r.extracted.textLength >= fallbackMinTextLength) return r;
+      console.warn(
+        `[webharvest] основной движок рендера дал мало текста (${r.extracted.textLength}), повторяю на запасном: ${url}`,
+      );
+    } catch (e) {
+      if (HarvestError.is(e) && (e.code === 'invalid_url' || e.code === 'too_large')) throw e;
+      console.warn(`[webharvest] основной движок рендера не справился (${describeError(e)}), повторяю на запасном: ${url}`);
+    }
+    return renderOnce(fallback, url, context);
+  }
+
+  /** Один рендер одним движком со всеми проверками результата. */
+  async function renderOnce(pool: BrowserPool, url: string, context: RenderContext): Promise<FetchResult> {
+    const rendered = await pool.render(url, { timeoutMs: browserTimeoutMs });
+    // Браузер тоже может быть перенаправлен (в т.ч. на приватный адрес по
+    // цепочке редиректов внутри страницы) — finalUrl проверяем так же строго,
+    // как и HTTP-хопы.
+    await validate(rendered.finalUrl);
+
+    // extract() ДО проверки на челлендж: правило Turnstile-виджета решает,
+    // стена это или встроенная форма, по объёму извлечённого материала, а не
+    // по сырому тексту (стена внутри шаблона сайта приносит меню и подвал).
+    // Ниже извлечение всё равно нужно — порядок ничего не стоит.
+    const probe = await runExtract(rendered.html, rendered.finalUrl);
+
+    const stillChallenged = detectChallenge(rendered.html, {
+      proseTextLength: probe.proseTextLength,
+      hasFormField: probe.hasFormField,
+    });
+    if (stillChallenged) {
+      throw new HarvestError('blocked', `Страница закрыта защитой ${stillChallenged}: ${url}`, {
+        by: stillChallenged,
+      });
+    }
+
+    const verdict = shouldEscalate({
+      status: rendered.status,
+      contentType: 'text/html',
+      html: rendered.html,
+      extractedTextLength: probe.textLength,
+      extractedProseTextLength: probe.proseTextLength,
+      contentHasFormField: probe.hasFormField,
+    });
+
+    // Браузер — последняя инстанция. Если и он не дал текста, честно сообщаем,
+    // а не отдаём пустоту или заглушку как контент.
+    if (verdict.escalate) {
+      if (context.challenge) {
+        throw new HarvestError('blocked', `Страница закрыта защитой ${context.challenge}: ${url}`, {
+          by: context.challenge,
+        });
+      }
+      // Бот-статусы (403/429/503) без узнаваемой сигнатуры защиты — не
+      // "нет текста", а конкретный ответ сервера. Иначе стилизованная
+      // 403-страница со своим текстом сообщила бы агенту неправду:
+      // "на странице не нашлось читаемого текста", хотя текст там есть,
+      // просто origin явно отказал.
+      if (verdict.reason === 'status') {
+        throw new HarvestError('upstream_error', `Сервер вернул ошибку ${rendered.status}: ${url}`, {
+          status: rendered.status,
+        });
+      }
+      throw new HarvestError('not_html', `На странице не нашлось читаемого текста: ${url}`, {
+        reason: verdict.reason,
+        contentType: context.contentType ?? null,
+      });
+    }
+
+    return { html: rendered.html, finalUrl: rendered.finalUrl, status: rendered.status, via: 'browser', extracted: probe };
   }
 
   return { fetch };

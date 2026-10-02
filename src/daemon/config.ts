@@ -16,6 +16,11 @@ export interface Config {
   /** Persistent user-data-dir браузера (cookies переживают рестарты демона);
    *  null — обычный временный профиль на каждый запуск. */
   browserProfileDir: string | null;
+  /** Движок рендера для scrape. 'lightpanda' — Lightpanda с фолбэком на
+   *  Chromium (см. docs/bench-lightpanda.md); browser use всегда на Chromium. */
+  scrapeEngine: 'chromium' | 'lightpanda';
+  /** Путь к бинарю Lightpanda или имя в PATH. */
+  lightpandaBin: string;
   /** Только для тестов: пускает приватные/локальные адреса мимо SSRF-защиты.
    *  Никогда не читается из config.json — только из явных overrides (кода вызова),
    *  чтобы файл на диске не мог тихо открыть демон для SSRF. */
@@ -32,6 +37,8 @@ const DEFAULTS: Config = {
   idleTimeoutMs: 5 * 60_000,
   browserChannel: 'chromium',
   browserProfileDir: null,
+  scrapeEngine: 'chromium',
+  lightpandaBin: 'lightpanda',
   allowPrivate: false,
 };
 
@@ -99,6 +106,14 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     fromEnv.browserChannel = c;
   }
   if (process.env.WEBHARVEST_BROWSER_PROFILE_DIR) fromEnv.browserProfileDir = process.env.WEBHARVEST_BROWSER_PROFILE_DIR;
+  if (process.env.WEBHARVEST_SCRAPE_ENGINE) {
+    const e = process.env.WEBHARVEST_SCRAPE_ENGINE;
+    if (e !== 'chromium' && e !== 'lightpanda') {
+      throw new Error(`WEBHARVEST_SCRAPE_ENGINE должен быть "chromium" или "lightpanda", получено: "${e}"`);
+    }
+    fromEnv.scrapeEngine = e;
+  }
+  if (process.env.WEBHARVEST_LIGHTPANDA_BIN) fromEnv.lightpandaBin = process.env.WEBHARVEST_LIGHTPANDA_BIN;
 
   const merged = { ...DEFAULTS, ...fromFile, ...fromEnv, ...overrides };
 
@@ -119,6 +134,15 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     throw new Error(
       `browserProfileDir должен быть строкой или null, получено: "${String(merged.browserProfileDir)}"`,
     );
+  }
+
+  if (merged.scrapeEngine !== 'chromium' && merged.scrapeEngine !== 'lightpanda') {
+    throw new Error(
+      `scrapeEngine должен быть "chromium" или "lightpanda", получено: "${String(merged.scrapeEngine)}"`,
+    );
+  }
+  if (typeof merged.lightpandaBin !== 'string' || !merged.lightpandaBin) {
+    throw new Error(`lightpandaBin должен быть непустой строкой, получено: "${String(merged.lightpandaBin)}"`);
   }
 
   // Defense in depth: even an explicit override cannot make the daemon bind

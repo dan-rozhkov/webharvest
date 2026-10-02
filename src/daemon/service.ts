@@ -5,6 +5,7 @@ import type { Page } from 'playwright';
 import { Cache, scrapeKey } from '../core/cache.js';
 import { DomainQueue } from '../core/politeness.js';
 import { createBrowserPool } from '../core/browser.js';
+import { createLightpandaPool } from '../core/lightpanda.js';
 import { createFetcher, DomainHints } from '../core/fetcher.js';
 import { createExtractPool } from '../core/extract-pool.js';
 import { assertAllowedUrl, assertPublicHost } from '../core/url.js';
@@ -293,11 +294,17 @@ export function createService(config: Config): Service {
     channel: config.browserChannel,
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'scrape') : undefined,
   });
+  // Lightpanda — основной движок scrape, Chromium выше остаётся запасным:
+  // запускается лениво, только когда Lightpanda не справился со страницей.
+  const lightpanda =
+    config.scrapeEngine === 'lightpanda'
+      ? createLightpandaPool({ bin: config.lightpandaBin, idleTimeoutMs: config.idleTimeoutMs })
+      : null;
   const extractPool = createExtractPool();
   const fetcher = createFetcher({
     extract: extractPool.extract,
     queue: new DomainQueue(),
-    browser,
+    ...(lightpanda ? { browser: lightpanda, fallbackBrowser: browser } : { browser }),
     hints: new DomainHints(),
     allowPrivate: config.allowPrivate,
   });
@@ -771,12 +778,13 @@ export function createService(config: Config): Service {
     async shutdown() {
       clearInterval(purgeTimer);
       await browser.shutdown();
+      await lightpanda?.shutdown();
       await sessions.shutdown();
       await extractPool.shutdown();
       cache.close();
     },
     isBrowserRunning() {
-      return browser.isRunning();
+      return browser.isRunning() || (lightpanda?.isRunning() ?? false);
     },
   };
 }
