@@ -32,9 +32,16 @@ describe('extract-pool', () => {
     pool = createExtractPool({ size: 1, workerUrl: built });
     const a = pool.extract(html, 'https://x/');
     const b = pool.extract(html, 'https://x/');
+    // Подписываемся на отказ ДО shutdown. Иначе промисы отклоняются внутри
+    // shutdown, пока ни один обработчик к ним не привязан: Node считает это
+    // unhandled rejection (и ловит его в отчёт Vitest), а привязанный позже
+    // `await expect(a)` даёт PromiseRejectionHandledWarning. Тест при этом
+    // зелёный, но шум в отчёте маскирует настоящие утечки отказов.
+    const aRejected = expect(a).rejects.toThrow(/остановлен/);
+    const bRejected = expect(b).rejects.toThrow(/остановлен/);
     await pool.shutdown();
     pool = undefined;
-    await expect(a).rejects.toThrow(/остановлен/);
-    await expect(b).rejects.toThrow(/остановлен/);
+    await aRejected;
+    await bRejected;
   });
 });
