@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, resolve, dirname } from 'node:path';
 
 // Genuine process-level integration test: src/daemon/index.ts is a script
@@ -13,7 +13,14 @@ import { join, resolve, dirname } from 'node:path';
 // bind a port inside the test runner itself.
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../..');
-const tsxBin = resolve(repoRoot, 'node_modules/.bin/tsx');
+// Inject the tsx loader into *this* node process instead of going through the
+// `tsx` CLI wrapper. The wrapper runs the daemon as its own child, so killing
+// the wrapper (the only pid a test can address) leaves the real daemon orphaned
+// and still bound to its port: one leaked process per test run, accumulating
+// silently for weeks. With the loader injected there is no grandchild — the
+// child *is* the daemon, so SIGTERM/SIGKILL land where they should.
+const tsxPreflight = resolve(repoRoot, 'node_modules/tsx/dist/preflight.cjs');
+const tsxLoader = pathToFileURL(resolve(repoRoot, 'node_modules/tsx/dist/loader.mjs')).href;
 
 function randomPort(): number {
   return 20000 + Math.floor(Math.random() * 20000);
@@ -21,8 +28,11 @@ function randomPort(): number {
 
 function spawnDaemon(port: number): ChildProcessWithoutNullStreams {
   const fakeHome = mkdtempSync(join(tmpdir(), 'webharvest-daemon-home-'));
-  return spawn(tsxBin, ['src/daemon/index.ts'], {
+  return spawn(process.execPath, ['--require', tsxPreflight, '--import', tsxLoader, 'src/daemon/index.ts'], {
     cwd: repoRoot,
+    // Own process group, so cleanup can take down a whole tree — a safety net
+    // for the case where some spawn path adds a grandchild again.
+    detached: true,
     env: {
       ...process.env,
       HOME: fakeHome,
@@ -51,8 +61,23 @@ async function waitForHealth(port: number, timeoutMs = 15_000): Promise<void> {
 
 let children: ChildProcessWithoutNullStreams[] = [];
 
+// Kill the whole process group (see `detached: true` above) rather than just the
+// direct child, so nothing spawned under it can outlive the test.
+function killTree(child: ChildProcessWithoutNullStreams): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (child.pid && child.pid > 0) {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // Group already gone (or never created) — fall through to the direct kill.
+    }
+  }
+  child.kill('SIGKILL');
+}
+
 afterEach(() => {
-  for (const c of children) c.kill('SIGKILL');
+  for (const c of children) killTree(c);
   children = [];
 });
 
