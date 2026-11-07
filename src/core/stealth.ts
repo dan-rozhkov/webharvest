@@ -22,6 +22,13 @@ export const STEALTH_ARGS = [
 ];
 
 /**
+ * Аргументы Chromium против WebRTC-доступа к локальной сети: ICE не ходит по
+ * UDP мимо прокси и не раскрывает локальные адреса (SSRF через WebRTC).
+ * Отдельно от STEALTH_ARGS — отпечаток автоматизации они не меняют.
+ */
+export const WEBRTC_ARGS = ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'];
+
+/**
  * Скрывает типичные следы Playwright/headless от навигатора.
  * Выполняется в контексте страницы до любого скрипта сайта.
  */

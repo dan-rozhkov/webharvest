@@ -293,12 +293,17 @@ export function createService(config: Config): Service {
     idleTimeoutMs: config.idleTimeoutMs,
     channel: config.browserChannel,
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'scrape') : undefined,
+    guard: { allowPrivate: config.allowPrivate },
   });
   // Lightpanda — основной движок scrape, Chromium выше остаётся запасным:
   // запускается лениво, только когда Lightpanda не справился со страницей.
   const lightpanda =
     config.scrapeEngine === 'lightpanda'
-      ? createLightpandaPool({ bin: config.lightpandaBin, idleTimeoutMs: config.idleTimeoutMs })
+      ? createLightpandaPool({
+          bin: config.lightpandaBin,
+          idleTimeoutMs: config.idleTimeoutMs,
+          guard: { allowPrivate: config.allowPrivate },
+        })
       : null;
   const extractPool = createExtractPool();
   const fetcher = createFetcher({
@@ -327,6 +332,7 @@ export function createService(config: Config): Service {
   const sessions = createSessionPool({
     channel: config.browserChannel,
     profileDir: config.browserProfileDir ? join(config.browserProfileDir, 'sessions') : undefined,
+    guard: { allowPrivate: config.allowPrivate },
   });
 
   async function assertSessionUrlSafe(session: BrowserSession): Promise<void> {

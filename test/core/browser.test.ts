@@ -42,14 +42,14 @@ describe('BrowserPool', () => {
     const base = await serve(() => ({
       body: '<html><body><div id="root"></div><script>document.getElementById("root").textContent="привет из JS"</script></body></html>',
     }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(base + '/');
     expect(r.html).toContain('привет из JS');
     expect(r.status).toBe(200);
   });
 
   it('поднимает браузер лениво', async () => {
-    pool = createBrowserPool();
+    pool = createBrowserPool({ guard: { allowPrivate: true } });
     expect(pool.isRunning()).toBe(false);
   });
 
@@ -59,7 +59,7 @@ describe('BrowserPool', () => {
         ? { body: '<html><head><meta http-equiv="refresh" content="0;url=/to"></head><body>x</body></html>' }
         : { body: '<html><body><p>цель</p></body></html>' },
     );
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(base + '/from');
     expect(r.finalUrl).toContain('/to');
   });
@@ -76,21 +76,21 @@ describe('BrowserPool', () => {
     });
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(`http://127.0.0.1:${port}/from`);
     expect(r.finalUrl).toContain('/to');
   });
 
   it('бросает too_large, если отрендеренный HTML превысил лимит', async () => {
     const base = await serve(() => ({ body: '<html><body>' + 'x'.repeat(5000) + '</body></html>' }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxBytes: 1000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000, maxBytes: 1000 });
     const err = await pool.render(base + '/').catch((e) => e);
     expect(err).toMatchObject({ code: 'too_large' });
   });
 
   it('не бросает too_large, когда HTML укладывается в лимит', async () => {
     const base = await serve(() => ({ body: '<html><body><p>малeнький текст</p></body></html>' }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxBytes: 1000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000, maxBytes: 1000 });
     const r = await pool.render(base + '/');
     expect(r.html).toContain('малeнький');
   });
@@ -110,14 +110,14 @@ describe('BrowserPool', () => {
     });
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(`http://127.0.0.1:${port}/`);
     expect(r.html).toContain(word);
   });
 
   it('закрывает браузер после простоя', async () => {
     const base = await serve(() => ({ body: '<html><body>x</body></html>' }));
-    pool = createBrowserPool({ idleTimeoutMs: 300 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 300 });
     await pool.render(base + '/');
     expect(pool.isRunning()).toBe(true);
     await new Promise((r) => setTimeout(r, 900));
@@ -126,7 +126,7 @@ describe('BrowserPool', () => {
 
   it('поднимает браузер заново после закрытия по простою', async () => {
     const base = await serve(() => ({ body: '<html><body><p>снова</p></body></html>' }));
-    pool = createBrowserPool({ idleTimeoutMs: 300 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 300 });
     await pool.render(base + '/');
     await new Promise((r) => setTimeout(r, 900));
     const r = await pool.render(base + '/');
@@ -145,7 +145,7 @@ describe('BrowserPool', () => {
     });
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
-    pool = createBrowserPool({ idleTimeoutMs: 300 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 300 });
     const r = await pool.render(`http://127.0.0.1:${port}/`, { timeoutMs: 5000 });
     expect(r.html).toContain('долго');
   });
@@ -154,7 +154,7 @@ describe('BrowserPool', () => {
     server = createServer(() => { /* никогда не отвечаем */ });
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     await expect(pool.render(`http://127.0.0.1:${port}/`, { timeoutMs: 1500 }))
       .rejects.toMatchObject({ code: 'timeout' });
   });
@@ -172,7 +172,7 @@ describe('BrowserPool', () => {
         });
       </script></body></html>`,
     }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(base + '/');
     const probe = JSON.parse(r.html.match(/\{.*\}/)![0]);
     expect(probe.webdriver).toBe(false);
@@ -202,14 +202,14 @@ describe('BrowserPool', () => {
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
     const base = `http://127.0.0.1:${port}`;
-    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 2 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000, maxConcurrent: 2 });
     await Promise.all([pool.render(base + '/a'), pool.render(base + '/b'), pool.render(base + '/c')]);
     expect(maxObserved).toBe(2);
   });
 
   it('переживает shutdown, вызванный во время рендера, и не работает после остановки', async () => {
     const base = await serve(() => ({ body: '<html><body><p>ok</p></body></html>' }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const renderPromise = pool.render(base + '/', { timeoutMs: 5000 });
     // The exact fate of a render racing shutdown at this granularity
     // depends on Playwright-internal timing (whether the context closes
@@ -236,7 +236,7 @@ describe('BrowserPool', () => {
     await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
     const { port } = server!.address() as { port: number };
     const base = `http://127.0.0.1:${port}`;
-    pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 1 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000, maxConcurrent: 1 });
 
     const first = pool.render(base + '/', { timeoutMs: 5000 });
     const second = pool.render(base + '/', { timeoutMs: 5000 });
@@ -291,7 +291,7 @@ describe('BrowserPool', () => {
       await new Promise<void>((r) => server!.listen(0, '127.0.0.1', r));
       const { port } = server!.address() as { port: number };
       const base = `http://127.0.0.1:${port}`;
-      pool = createBrowserPool({ idleTimeoutMs: 60_000, maxConcurrent: 1 });
+      pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000, maxConcurrent: 1 });
 
       const first = pool.render(base + '/', { timeoutMs: 5000 });
       const second = pool.render(base + '/', { timeoutMs: 5000 });
@@ -375,7 +375,7 @@ describe('BrowserPool', () => {
         </script>
       </body></html>`,
     }));
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const r = await pool.render(base + '/', { timeoutMs: 15_000 });
     expect(r.html).toContain('контент после челленджа');
   });

@@ -3,6 +3,9 @@ import { createServer } from 'node:net';
 import { chromium, type Browser, type Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import type { BrowserPool, RenderResult } from './browser.js';
+import { startEgressProxy, type EgressProxy } from './egress-proxy.js';
+import { gotoGuarded } from './guarded-goto.js';
+import { createRequestGuard, type RequestGuardOptions } from './request-guard.js';
 import { trackNetwork, waitForNetworkQuiet, LOAD_QUIET_CAP_MS, LOAD_QUIET_MS } from './settle.js';
 
 /**
@@ -23,6 +26,8 @@ export interface LightpandaPoolOptions {
   idleTimeoutMs?: number;
   maxConcurrent?: number;
   maxBytes?: number;
+  /** ТОЛЬКО тесты: политика SSRF для прокси (request-guard.ts). */
+  guard?: RequestGuardOptions;
 }
 
 const CLOSED_MESSAGE = 'Пул Lightpanda остановлен, рендер отклонён';
@@ -39,14 +44,27 @@ async function freePort(): Promise<number> {
   });
 }
 
+const PROXY_ENV = /^(no_proxy|http_proxy|https_proxy|all_proxy)$/i;
+
+/** Окружение для lightpanda без *_PROXY/NO_PROXY: иначе NO_PROXY=127.0.0.1
+ *  даст обход нашего прокси, а чужой HTTP(S)_PROXY — подмену прокси. */
+export function envWithoutProxy(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !PROXY_ENV.test(k)));
+}
+
 export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
   const idleTimeoutMs = opts.idleTimeoutMs ?? 5 * 60_000;
   const maxConcurrent = opts.maxConcurrent ?? 3;
   const maxBytes = opts.maxBytes ?? 5 * 1024 * 1024;
 
+  // Единственная точка принуждения — egress-proxy (--http-proxy процесса
+  // Lightpanda): context.route тут не ставится — он не видит редиректы, а
+  // прокси проверен тестом (подресурс и редирект на loopback не доходят).
+  const guard = createRequestGuard(opts.guard);
   let proc: ChildProcess | null = null;
+  let proxy: EgressProxy | null = null;
   let endpoint: string | null = null;
-  let launching: Promise<string> | null = null;
+  let launching: Promise<{ url: string; proxy: EgressProxy }> | null = null;
   let idleTimer: NodeJS.Timeout | null = null;
   let active = 0;
   let closed = false;
@@ -59,13 +77,19 @@ export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
     }
     proc?.kill('SIGTERM');
     proc = null;
+    void proxy?.close();
+    proxy = null;
     endpoint = null;
   }
 
-  async function launch(): Promise<string> {
+  async function launch(): Promise<{ url: string; proxy: EgressProxy }> {
     const port = await freePort();
-    const child = spawn(opts.bin, ['serve', '--host', '127.0.0.1', '--port', String(port)], {
+    // Весь HTTP-трафик Lightpanda — через фильтрующий прокси (egress-proxy.ts):
+    // он видит редиректы и пинит проверенный IP, чего context.route не умеет.
+    const egress = await startEgressProxy(guard);
+    const child = spawn(opts.bin, ['serve', '--host', '127.0.0.1', '--port', String(port), '--http-proxy', egress.url], {
       stdio: ['ignore', 'ignore', 'pipe'],
+      env: envWithoutProxy(process.env),
     });
     let stderr = '';
     child.stderr!.on('data', (d) => (stderr = (stderr + d).slice(-2000)));
@@ -76,6 +100,8 @@ export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
       if (proc === child) {
         proc = null;
         endpoint = null;
+        void proxy?.close();
+        proxy = null;
       }
     });
 
@@ -87,19 +113,21 @@ export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
         const r = await fetch(`${url}/json/version`);
         if (r.ok) {
           proc = child;
+          proxy = egress;
           endpoint = url;
-          return url;
+          return { url, proxy: egress };
         }
       } catch {}
       await new Promise((r) => setTimeout(r, 50));
     }
     child.kill('SIGKILL');
+    void egress.close();
     const reason = spawnError ? (spawnError as Error).message : stderr.trim() || 'CDP-порт не открылся';
     throw new HarvestError('network', `Не удалось запустить Lightpanda (${opts.bin}): ${reason}`);
   }
 
-  async function ensure(): Promise<string> {
-    if (endpoint) return endpoint;
+  async function ensure(): Promise<{ url: string; proxy: EgressProxy }> {
+    if (endpoint && proxy) return { url: endpoint, proxy };
     if (!launching) {
       launching = launch().finally(() => {
         launching = null;
@@ -119,8 +147,11 @@ export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
   async function doRender(url: string, timeout: number, onBrowser: (b: Browser) => void): Promise<RenderResult> {
     let browser: Browser;
     let page: Page;
+    let acquiredProxy: EgressProxy;
     try {
-      browser = await chromium.connectOverCDP(await ensure());
+      const acquired = await ensure();
+      acquiredProxy = acquired.proxy;
+      browser = await chromium.connectOverCDP(acquired.url);
       onBrowser(browser);
       const context = browser.contexts()[0] ?? (await browser.newContext());
       page = await context.newPage();
@@ -131,7 +162,7 @@ export function createLightpandaPool(opts: LightpandaPoolOptions): BrowserPool {
     }
     try {
       const network = trackNetwork(page);
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+      const response = await gotoGuarded(page, url, acquiredProxy, { waitUntil: 'domcontentloaded', timeout });
       await waitForNetworkQuiet(page, network, {
         sinceGen: 0,
         quietMs: LOAD_QUIET_MS,

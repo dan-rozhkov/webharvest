@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { chromium, type Browser, type BrowserContext } from 'playwright';
-import { applyStealth, STEALTH_ARGS, STEALTH_UA } from './stealth.js';
+import { applyStealth, STEALTH_ARGS, STEALTH_UA, WEBRTC_ARGS } from './stealth.js';
+import { startEgressProxy, proxyArgs, type EgressProxy } from './egress-proxy.js';
+import { createRequestGuard, type RequestGuardOptions } from './request-guard.js';
 
 export type BrowserChannel = 'chromium' | 'chrome';
 
@@ -14,6 +16,9 @@ export interface LaunchOptions {
   timezoneId?: string;
   deviceScaleFactor?: number;
   extraHTTPHeaders?: Record<string, string>;
+  /** Политика SSRF для прокси (request-guard.ts). Прокси ставится
+   *  всегда; опции нужны только тестам (allowPrivate/allowHosts). */
+  guard?: RequestGuardOptions;
 }
 
 export interface LaunchedBrowser {
@@ -21,7 +26,11 @@ export interface LaunchedBrowser {
   context: BrowserContext;
   usedChannel: BrowserChannel;
   persistent: boolean;
+  /** Фильтрующий прокси этого браузера (журнал отказов для типизированных ошибок). */
+  proxy: EgressProxy;
 }
+
+const LAUNCH_ARGS = (proxyUrl: string): string[] => [...STEALTH_ARGS, ...WEBRTC_ARGS, ...proxyArgs(proxyUrl)];
 
 const CONTEXT_OPTS = (opts: LaunchOptions) => ({
   userAgent: STEALTH_UA,
@@ -55,15 +64,19 @@ export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowse
     opts.channel === 'chrome' ? ['chrome', undefined] : [undefined];
   const profileDir = opts.profileDir;
 
+  const guard = createRequestGuard(opts.guard);
   let lastError: unknown = null;
   for (const channel of channels) {
+    // Фильтрующий прокси (egress-proxy.ts): весь трафик браузера, включая
+    // редиректы, идёт через него. Живёт ровно столько, сколько браузер.
+    const proxy = await startEgressProxy(guard);
     try {
       if (profileDir) {
         mkdirSync(profileDir, { recursive: true });
         const context = await chromium.launchPersistentContext(profileDir, {
           headless: opts.headless,
           ...(channel ? { channel } : {}),
-          args: STEALTH_ARGS,
+          args: LAUNCH_ARGS(proxy.url),
           ...CONTEXT_OPTS(opts),
         });
         try {
@@ -79,20 +92,22 @@ export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowse
           await context.close().catch(() => {});
           throw e;
         }
+        context.on('close', () => void proxy.close());
         // context.browser() типизирован как Browser | null, но для
         // persistent-контекста всегда возвращает браузер (проверено на
         // playwright 1.62): контекст без браузера существовать не может.
-        return { browser: context.browser()!, context, usedChannel: channel ?? 'chromium', persistent: true };
+        return { browser: context.browser()!, context, usedChannel: channel ?? 'chromium', persistent: true, proxy };
       }
       const browser = await chromium.launch({
         headless: opts.headless,
         ...(channel ? { channel } : {}),
-        args: STEALTH_ARGS,
+        args: LAUNCH_ARGS(proxy.url),
       });
+      browser.on('disconnected', () => void proxy.close());
       try {
         const context = await browser.newContext(CONTEXT_OPTS(opts));
         await applyStealth(context);
-        return { browser, context, usedChannel: channel ?? 'chromium', persistent: false };
+        return { browser, context, usedChannel: channel ?? 'chromium', persistent: false, proxy };
       } catch (e) {
         // newContext/applyStealth упали — уже запущенный процесс Chromium
         // нельзя оставить без владельца: закрываем и пробуем следующий канал.
@@ -100,6 +115,7 @@ export async function launchBrowser(opts: LaunchOptions): Promise<LaunchedBrowse
         throw e;
       }
     } catch (e) {
+      await proxy.close();
       lastError = e;
       const msg = e instanceof Error ? e.message : String(e);
       // Фолбэк — только на «Chrome не установлен». Любую другую ошибку

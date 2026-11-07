@@ -56,7 +56,7 @@ async function serveChallenge(): Promise<string> {
 describe('бюджет ожидания челленджа', () => {
   it('оставляет хвост на content() и возвращает HTML челленджа, а не timeout', async () => {
     const url = await serveChallenge();
-    pool = createBrowserPool({ idleTimeoutMs: 60_000 });
+    pool = createBrowserPool({ guard: { allowPrivate: true }, idleTimeoutMs: 60_000 });
     const timeoutMs = 6_000;
 
     const r = await pool.render(url, { timeoutMs });

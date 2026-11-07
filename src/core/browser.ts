@@ -1,6 +1,9 @@
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
+import type { RequestGuardOptions } from './request-guard.js';
+import type { EgressProxy } from './egress-proxy.js';
+import { gotoGuarded } from './guarded-goto.js';
 import { isChallengeActive, waitForChallengeResolution } from './challenge.js';
 import { trackNetwork, waitForNetworkQuiet, LOAD_QUIET_CAP_MS, LOAD_QUIET_MS, type NetworkTracker } from './settle.js';
 
@@ -28,6 +31,8 @@ export interface BrowserPoolOptions {
   channel?: BrowserChannel;
   /** Persistent user-data-dir: cookies/сессии переживают рестарты пула. */
   profileDir?: string;
+  /** ТОЛЬКО тесты: политика SSRF для прокси (request-guard.ts). */
+  guard?: RequestGuardOptions;
 }
 
 const CLOSED_MESSAGE = 'Пул браузеров остановлен, рендер отклонён';
@@ -79,6 +84,7 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
 
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
+  let proxy: EgressProxy | null = null;
   let idleTimer: NodeJS.Timeout | null = null;
   let active = 0;
   // Each in-flight render holds a "generation" token for the browser/context
@@ -99,25 +105,27 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
 
   // Serializes concurrent launches so two overlapping renders that both see
   // context === null don't each start their own launchBrowser().
-  let launching: Promise<{ ctx: BrowserContext; gen: number }> | null = null;
+  let launching: Promise<{ ctx: BrowserContext; gen: number; proxy: EgressProxy }> | null = null;
 
-  async function ensure(): Promise<{ ctx: BrowserContext; gen: number }> {
-    if (context) return { ctx: context, gen: generation };
+  async function ensure(): Promise<{ ctx: BrowserContext; gen: number; proxy: EgressProxy }> {
+    if (context && proxy) return { ctx: context, gen: generation, proxy };
     if (launching) return launching;
     launching = (async () => {
       const launched = await launchBrowser({
         headless,
         channel: opts.channel,
         profileDir: opts.profileDir,
+        guard: opts.guard,
         timezoneId: 'Europe/Nicosia',
         deviceScaleFactor: 2,
         extraHTTPHeaders: { 'accept-language': 'en-US,en;q=0.9,ru;q=0.8' },
       });
       browser = launched.browser;
       context = launched.context;
+      proxy = launched.proxy;
       persistent = launched.persistent;
       generation += 1;
-      return { ctx: launched.context, gen: generation };
+      return { ctx: launched.context, gen: generation, proxy: launched.proxy };
     })();
     try {
       return await launching;
@@ -192,9 +200,11 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
     let gen: number;
     let page: Page;
     let network: NetworkTracker;
+    let acquiredProxy: EgressProxy;
     try {
       const acquired = await ensure();
       gen = acquired.gen;
+      acquiredProxy = acquired.proxy;
       page = await acquired.ctx.newPage();
       onPage(page);
       // До goto: запросы самой загрузки тоже должны попасть в счёт.
@@ -204,7 +214,9 @@ export function createBrowserPool(opts: BrowserPoolOptions = {}): BrowserPool {
       throw new HarvestError('network', `Не удалось запустить браузер: ${msg}`);
     }
     try {
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+      // Отказы прокси приписываются именно этой навигации (guarded-goto.ts);
+      // прокси — от того экземпляра браузера, который получил этот рендер.
+      const response = await gotoGuarded(page, url, acquiredProxy, { waitUntil: 'domcontentloaded', timeout });
       // Короткая best-effort тишина сети вместо networkidle(1000)+300мс: на
       // тихой странице это LOAD_QUIET_MS, SPA успевает дорисоваться данными,
       // а long-poll/аналитика не держат рендер (см. settle.ts). Потолок —

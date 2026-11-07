@@ -9,6 +9,9 @@
 import type { Browser, BrowserContext, Page } from 'playwright';
 import { HarvestError } from './errors.js';
 import { launchBrowser, type BrowserChannel } from './browser-launch.js';
+import type { RequestGuardOptions } from './request-guard.js';
+import type { EgressProxy } from './egress-proxy.js';
+import { gotoGuarded } from './guarded-goto.js';
 import { waitForChallengeResolution } from './challenge.js';
 import { trackNetwork, waitForNetworkQuiet, LOAD_QUIET_CAP_MS, LOAD_QUIET_MS, type NetworkTracker } from './settle.js';
 import type { A11ySnapshot } from './a11y/types.js';
@@ -62,6 +65,8 @@ export interface SessionPoolOptions {
   channel?: BrowserChannel;
   /** Persistent user-data-dir: cookies/сессии переживают рестарты пула. */
   profileDir?: string;
+  /** ТОЛЬКО тесты: политика SSRF для прокси (request-guard.ts). */
+  guard?: RequestGuardOptions;
 }
 
 export interface SessionPool {
@@ -123,7 +128,8 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
 
   let browser: Browser | null = null;
   let context: BrowserContext | null = null;
-  let launching: Promise<BrowserContext> | null = null;
+  let proxy: EgressProxy | null = null;
+  let launching: Promise<{ ctx: BrowserContext; proxy: EgressProxy }> | null = null;
   // Persistent-режим (profileDir): браузером владеет контекст, и shutdown()
   // обязан не звать b.close() повторно после c.close() — см. teardown() в
   // browser.ts с тем же флагом.
@@ -144,8 +150,8 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
   const sweepTimer = setInterval(sweepIdle, idleTimeoutMs);
   sweepTimer.unref();
 
-  async function ensureContext(): Promise<BrowserContext> {
-    if (context) return context;
+  async function ensureContext(): Promise<{ ctx: BrowserContext; proxy: EgressProxy }> {
+    if (context && proxy) return { ctx: context, proxy };
     if (launching) return launching;
     launching = (async () => {
       // launchBrowser сам закрывает браузер, если newContext/applyStealth
@@ -156,11 +162,13 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
         headless,
         channel: opts.channel,
         profileDir: opts.profileDir,
+        guard: opts.guard,
       });
       browser = launched.browser;
       context = launched.context;
+      proxy = launched.proxy;
       persistent = launched.persistent;
-      return launched.context;
+      return { ctx: launched.context, proxy: launched.proxy };
     })();
     try {
       return await launching;
@@ -228,7 +236,7 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
         }
       }
 
-      const ctx = await ensureContext();
+      const { ctx, proxy: sessionProxy } = await ensureContext();
       const page = await ctx.newPage();
       const network = trackNetwork(page);
       // Действия (click/fill/…) без явного таймаута ждут actionability по
@@ -236,7 +244,7 @@ export function createSessionPool(opts: SessionPoolOptions = {}): SessionPool {
       // полминуты. Явные таймауты (goto, ожидания) этот дефолт не трогает.
       page.setDefaultTimeout(8_000);
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        await gotoGuarded(page, url, sessionProxy, { waitUntil: 'domcontentloaded', timeout: 30_000 });
         // Turnstile/Cloudflare: не отдавать агенту страницу-челлендж. Ждём
         // авто-решения или кликаем чекбокс; бюджет отдельный от goto. Если за
         // бюджет челлендж не решился — это заблокированная страница, а не

@@ -17,18 +17,33 @@ const fakePage = () => ({
   title: vi.fn(async () => 'Test Page'),
   waitForTimeout: vi.fn(async () => {}),
   setDefaultTimeout: vi.fn(),
+  on: vi.fn(),
+  off: vi.fn(),
+  mainFrame: vi.fn(() => ({})),
 });
 
 const fakeContext = () => ({
   newPage: vi.fn(async () => fakePage()),
   close: vi.fn(async () => {}),
   addInitScript: vi.fn(async () => {}),
+  on: vi.fn(),
 });
 
 const fakeBrowser = () => ({
+  on: vi.fn(),
   newContext: vi.fn(async () => fakeContext()),
   close: vi.fn(async () => {}),
 });
+
+// Настоящий прокси не поднимаем: фабрика подменена.
+vi.mock('../../src/core/egress-proxy.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/core/egress-proxy.js')>()),
+  startEgressProxy: vi.fn(async () => ({
+    url: 'http://127.0.0.1:1',
+    wasDenied: () => false,
+    close: async () => {},
+  })),
+}));
 
 vi.mock('playwright', () => ({
   chromium: {
@@ -77,7 +92,7 @@ describe('createSessionPool: периодический sweep простаива
     // конца работы демона. Периодический таймер обязан снимать её сам,
     // независимо от того, обращается ли кто-то к пулу вообще.
     vi.useFakeTimers();
-    pool = createSessionPool({ idleTimeoutMs: 200 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, idleTimeoutMs: 200 });
     const s = await pool.open('http://example.test/');
     // open() отдаёт сессию занятой (см. JSDoc InternalSession.busy) — в
     // реальном демоне daemon/service.ts снимает занятость сразу перед тем,
@@ -104,7 +119,7 @@ describe('createSessionPool: периодический sweep простаива
 
   it('не снимает сессию, к которой недавно обращались (get() продлевает жизнь)', async () => {
     vi.useFakeTimers();
-    pool = createSessionPool({ idleTimeoutMs: 200 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, idleTimeoutMs: 200 });
     const s = await pool.open('http://example.test/');
     pool.release(s.id); // см. комментарий в предыдущем тесте
 
@@ -126,7 +141,7 @@ describe('createSessionPool: периодический sweep простаива
     // прямо во время выполняющегося действия, если оно просто заняло больше
     // idleTimeoutMs. `busy` — источник истины поверх lastUsedAt для sweep.
     vi.useFakeTimers();
-    pool = createSessionPool({ idleTimeoutMs: 200 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, idleTimeoutMs: 200 });
     const s = await pool.open('http://example.test/');
     pool.get(s.id); // имитирует начало действия — сессия занята, release() ещё не вызван
 
@@ -148,7 +163,7 @@ describe('createSessionPool: периодический sweep простаива
 
   it('останавливает таймер на shutdown — advanceTimersByTime после него не обращается к уже закрытому пулу', async () => {
     vi.useFakeTimers();
-    pool = createSessionPool({ idleTimeoutMs: 200 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, idleTimeoutMs: 200 });
     await pool.open('http://example.test/');
     await pool.shutdown();
 
@@ -164,7 +179,7 @@ describe('createSessionPool: вытеснение не трогает занят
     // Находка код-ревью: evictOldest() раньше выбирал жертву просто по
     // наименьшему seq среди ВСЕХ сессий — шестой параллельный open() мог
     // закрыть страницу, которую прямо сейчас использует чужое действие.
-    pool = createSessionPool({ maxSessions: 2 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, maxSessions: 2 });
     const a = await pool.open('http://example.test/a');
     pool.release(a.id);
     const b = await pool.open('http://example.test/b');
@@ -187,7 +202,7 @@ describe('createSessionPool: вытеснение не трогает занят
     // maxSessions или тихо выбрать занятую жертву) недопустим — вызывающий
     // должен получить явную причину отказа, а не загадочный not_found или
     // timeout чуть позже.
-    pool = createSessionPool({ maxSessions: 1 });
+    pool = createSessionPool({ guard: { allowPrivate: true }, maxSessions: 1 });
     const a = await pool.open('http://example.test/a');
     // `a` остаётся занятой — release() намеренно не вызываем.
     void a;
@@ -205,6 +220,7 @@ describe('createSessionPool: ensureContext закрывает Chromium, если
     // жил до перезапуска демона, а следующий open() запускал ещё один.
     const closeBrowser = vi.fn(async () => {});
     const failingBrowser = {
+      on: vi.fn(),
       newContext: vi.fn(async () => {
         throw new Error('newContext упал (смоделированный сбой)');
       }),
@@ -213,7 +229,7 @@ describe('createSessionPool: ensureContext закрывает Chromium, если
     vi.mocked(chromium.launch).mockClear();
     vi.mocked(chromium.launch).mockImplementationOnce(async () => failingBrowser as never);
 
-    pool = createSessionPool();
+    pool = createSessionPool({ guard: { allowPrivate: true } });
     await expect(pool.open('http://example.test/')).rejects.toThrow('newContext упал');
     expect(closeBrowser).toHaveBeenCalledTimes(1);
 
@@ -235,7 +251,7 @@ describe('createSessionPool: stealth применяется к каждому н
     // БЕЗ fake timers (в отличие от тестов выше): этот тест не продвигает
     // время, а только проверяет оркестрацию, и реальные таймеры тут безопасны.
     vi.mocked(chromium.launch).mockClear();
-    pool = createSessionPool();
+    pool = createSessionPool({ guard: { allowPrivate: true } });
     const s = await pool.open('http://example.test/');
     expect(s.id).toMatch(/^s_/);
     const ctx = await vi.mocked(chromium.launch).mock.results[0]!.value;
@@ -251,7 +267,7 @@ describe('createSessionPool: не отдаёт агенту нерешённый
     // получал ровно то, от чего модуль должен был защищать. Теперь false
     // обязан превращаться в blocked: страница закрывается, сессии нет.
     challengeMocks.waitForChallengeResolution.mockResolvedValueOnce(false);
-    pool = createSessionPool();
+    pool = createSessionPool({ guard: { allowPrivate: true } });
     await expect(pool.open('http://example.test/')).rejects.toMatchObject({ code: 'blocked' });
     expect(pool.count()).toBe(0); // страница закрыта в catch, сессия не создана
   });

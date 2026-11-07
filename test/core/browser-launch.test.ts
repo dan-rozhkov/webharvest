@@ -8,13 +8,30 @@ import { join } from 'node:path';
 // сбое newContext), а не сам запуск Chromium.
 const fakeContext = () => ({
   addInitScript: vi.fn(async () => {}),
+  on: vi.fn(),
   browser: vi.fn(() => ({})),
   close: vi.fn(async () => {}),
 });
 const fakeBrowser = () => ({
+  on: vi.fn(),
   newContext: vi.fn(async () => fakeContext()),
   close: vi.fn(async () => {}),
 });
+
+// Настоящий прокси не поднимаем: фабрика подменена, close считаем.
+const proxyMocks = vi.hoisted(() => ({
+  close: vi.fn(async () => {}),
+  start: vi.fn(),
+}));
+vi.mock('../../src/core/egress-proxy.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/core/egress-proxy.js')>()),
+  startEgressProxy: proxyMocks.start,
+}));
+proxyMocks.start.mockImplementation(async () => ({
+  url: 'http://127.0.0.1:1',
+  wasDenied: () => false,
+  close: proxyMocks.close,
+}));
 
 vi.mock('playwright', () => ({
   chromium: {
@@ -90,7 +107,7 @@ describe('launchBrowser', () => {
   });
   it('при сбое newContext закрывает уже запущенный браузер', async () => {
     const closeBrowser = vi.fn(async () => {});
-    const failing = { newContext: vi.fn(async () => { throw new Error('newContext failed'); }), close: closeBrowser };
+    const failing = { on: vi.fn(), newContext: vi.fn(async () => { throw new Error('newContext failed'); }), close: closeBrowser };
     vi.mocked(chromium.launch).mockImplementationOnce(async () => failing as never);
     await expect(launchBrowser({ headless: true })).rejects.toThrow('newContext failed');
     expect(closeBrowser).toHaveBeenCalledTimes(1);
@@ -111,12 +128,52 @@ describe('launchBrowser', () => {
     await expect(launchBrowser({ headless: true, profileDir: dir })).rejects.toThrow('addInitScript failed');
     expect(closeContext).toHaveBeenCalledTimes(1);
   });
-  it('передаёт stealth-аргументы в launch', async () => {
+  it('передаёт stealth-аргументы в launch и не меняет их', async () => {
     await launchBrowser({ headless: true });
-    expect(vi.mocked(chromium.launch).mock.calls[0]![0]).toEqual(
-      expect.objectContaining({
-        args: ['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage'],
-      }),
+    const args = vi.mocked(chromium.launch).mock.calls[0]![0]!.args;
+    expect(args?.slice(0, 2)).toEqual(['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage']);
+  });
+  it('добавляет WebRTC-аргумент рядом со stealth', async () => {
+    await launchBrowser({ headless: true });
+    expect(vi.mocked(chromium.launch).mock.calls[0]![0]!.args).toContain(
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     );
+    await launchBrowser({ headless: true, profileDir: tmpProfile() });
+    expect(vi.mocked(chromium.launchPersistentContext).mock.calls[0]![1]!.args).toContain(
+      '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+    );
+  });
+  it('весь трафик идёт через фильтрующий прокси, loopback из обхода убран', async () => {
+    await launchBrowser({ headless: true });
+    const args = vi.mocked(chromium.launch).mock.calls[0]![0]!.args!;
+    expect(args.some((a) => /^--proxy-server=http:\/\/127\.0\.0\.1:\d+$/.test(a))).toBe(true);
+    expect(args).toContain('--proxy-bypass-list=<-loopback>');
+    await launchBrowser({ headless: true, profileDir: tmpProfile() });
+    expect(vi.mocked(chromium.launchPersistentContext).mock.calls[0]![1]!.args).toContain('--proxy-bypass-list=<-loopback>');
+  });
+  it('не меняет JS-окружение страницы: нет route/routeWebSocket (у фейка их нет — вызов упал бы) и serviceWorkers:block', async () => {
+    // Playwright ради них подменяет WebSocket/ServiceWorkerContainer страницы —
+    // это видно антиботам. SSRF держит только прокси.
+    await launchBrowser({ headless: true });
+    const browser = (await vi.mocked(chromium.launch).mock.results[0]!.value) as { newContext: ReturnType<typeof vi.fn> };
+    expect(browser.newContext.mock.calls[0]![0]).not.toHaveProperty('serviceWorkers');
+    await launchBrowser({ headless: true, profileDir: tmpProfile() });
+    expect(vi.mocked(chromium.launchPersistentContext).mock.calls[0]![1]).not.toHaveProperty('serviceWorkers');
+  });
+  it('прокси закрывается, если запуск не удался (и не запускается реальный)', async () => {
+    vi.mocked(chromium.launch).mockRejectedValueOnce(new Error('boom'));
+    await expect(launchBrowser({ headless: true })).rejects.toThrow('boom');
+    expect(proxyMocks.close).toHaveBeenCalledTimes(1);
+  });
+  it('прокси закрывается вместе с браузером (disconnected) и контекстом (close)', async () => {
+    const r = await launchBrowser({ headless: true });
+    const onB = (r.browser as unknown as { on: ReturnType<typeof vi.fn> }).on;
+    const cb = onB.mock.calls.find((c) => c[0] === 'disconnected')![1] as () => void;
+    cb();
+    expect(proxyMocks.close).toHaveBeenCalledTimes(1);
+    const p = await launchBrowser({ headless: true, profileDir: tmpProfile() });
+    const onC = (p.context as unknown as { on: ReturnType<typeof vi.fn> }).on;
+    (onC.mock.calls.find((c) => c[0] === 'close')![1] as () => void)();
+    expect(proxyMocks.close).toHaveBeenCalledTimes(2);
   });
 });

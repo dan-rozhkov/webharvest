@@ -227,9 +227,25 @@ The brief specifies why `robots.txt` as a prohibition was deliberately omitted: 
 
 A `respectRobots` config flag was considered and removed. It is not coming back. Rate limiting is the mechanism.
 
-### ❌ SSRF Protection Doesn't Close DNS Rebinding
+### SSRF: what is covered, and what is not
 
-The private-address check (`assertPublicHost`) resolves the hostname and validates the addresses it gets, but that's a check-then-use, not a closed gate: undici and Playwright each resolve the hostname again, independently, when they actually connect. A host with a short DNS TTL that answers with a public address during the check and a private one moments later (classic DNS rebinding) can walk past the guard. Properly closing this needs pinned-IP dispatch — resolve once, force every subsequent connection onto that exact address, and validate the connecting socket's remote address before reading any bytes — which is real engineering, not a quick patch, and is out of scope for a personal tool. Known and accepted, not silently assumed away.
+The navigation URL is checked (`assertAllowedUrl` / `assertPublicHost`), and so is every redirect hop on the HTTP path. Requests that a page's own scripts make inside the browser are enforced in one place, a local filtering proxy (`src/core/egress-proxy.ts`, policy in `src/core/request-guard.ts`), for every browser the daemon starts (scrape pool, browser-use sessions, Lightpanda):
+
+- Chromium runs with `--proxy-server` pointing at a proxy on `127.0.0.1` and `--proxy-bypass-list=<-loopback>`, so loopback and link-local targets are proxied too. Lightpanda gets the same proxy through `--http-proxy`, and its process environment is stripped of `NO_PROXY`/`HTTP(S)_PROXY`/`ALL_PROXY`.
+- The proxy resolves the host itself, refuses private, loopback, link-local, multicast, site-local and reserved addresses (IPv6 is canonicalised first; IPv4-mapped, IPv4-compatible, NAT64 and 6to4 forms are checked by their embedded IPv4), and connects only to the addresses it checked (pinning), trying each in turn. Chromium does not resolve target names itself when it uses a proxy, so DNS rebinding between the check and the connection is closed.
+- It sees every redirect hop, `fetch`/XHR, images, scripts, iframes, prefetch, WebSocket (the page's native WebSocket, tunnelled with CONNECT) and service worker traffic. HTTPS is tunnelled without opening TLS, so the Chrome TLS fingerprint is unchanged.
+- Nothing is injected into the page: no `context.route`, no `routeWebSocket`, no `serviceWorkers: 'block'`. Playwright replaces page objects (`WebSocket`, `ServiceWorkerContainer`) for those features, which a site can detect, and `route` does not see redirect hops.
+- WebRTC is restricted with `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`.
+- A refusal is a 403 (with a marker header on plain HTTP, removed from origin responses). The proxy keeps a short log of refused `host:port` pairs; a navigation is reported as `invalid_url` only if its own host or redirect chain was refused during that navigation. A DNS failure or an unreachable host is not a refusal: the proxy answers 502/504 with its own marker header (removed from origin responses), and the navigation helper turns that into a `network` error instead of a rendered error page.
+- The 60 second timeout applies only to setting up a tunnel or waiting for the origin's response. An established tunnel (WebSocket, SSE, long-poll) or a response that is flowing is never cut by the proxy.
+- The refusal log holds up to 4096 entries for 5 minutes. A flood of refusals can only evict old entries, so a blocked navigation may be reported as `network` instead of `invalid_url`; it can never let traffic through.
+
+Known limits:
+
+- Lightpanda follows redirects inside its own process and is protected by the proxy only (checked with a test: the private target is never reached). One proxy serves the whole Lightpanda process, so a refusal of a redirect hop that the page never reported cannot be tied to one navigation without risking a wrong label; such a navigation (for example an https redirect to a private address) is reported as `network` rather than `invalid_url`. Security is not affected. Other transports it may have are not enumerated.
+- Direct network paths in Chromium that ignore the proxy (for example non-proxied UDP) are covered only for WebRTC.
+- The cache of DNS verdicts (30 s allow, 5 s refusal, 1 s failure) is only used for the check; the connection uses the cached verified addresses.
+- `allowPrivate` (tests only) cannot be set from `config.json`; it relaxes the guard the same way it relaxes the navigation check.
 
 ## Configuration
 

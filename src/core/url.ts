@@ -1,5 +1,5 @@
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { HarvestError } from './errors.js';
 
 const TRACKING_PARAMS = /^(utm_|ga_|mc_|_hs|yclid$|gclid$|fbclid$|msclkid$|igshid$|ref_src$|si$)/i;
@@ -40,58 +40,76 @@ function isPrivateV4(ip: string): boolean {
   return false;
 }
 
+/** Каноническая форма хоста для сравнений и проверок: без скобок IPv6, в нижнем
+ *  регистре, без завершающей точки; IPv6 приведён парсером URL к сжатому виду
+ *  (0:0:0:0:0:0:0:1 → ::1, ::ffff:127.0.0.1 → ::ffff:7f00:1), числовые формы
+ *  IPv4 (0x7f.1) — к точечной. Имя, которое не разбирается, возвращается как есть. */
+export function canonicalHost(host: string): string {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!h) return h;
+  try {
+    return new URL(`http://${h.includes(':') ? `[${h}]` : h}`).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return h;
+  }
+}
+
+// Статические недоступные диапазоны IPv6 (адрес уже канонический).
+const BLOCKED_V6 = new BlockList();
+for (const [net, prefix] of [
+  ['::', 96],              // ::/96: unspecified, loopback, IPv4-compatible (::7f00:1)
+  ['::ffff:0:0:0', 96],    // SIIT ::ffff:0:0:0/96
+  ['64:ff9b:1::', 48],     // NAT64 local-use
+  ['100::', 64],           // discard-only
+  ['2001::', 32],          // Teredo (внутри обфусцированный v4)
+  ['fc00::', 7],           // unique local
+  ['fe80::', 10],          // link-local
+  ['fec0::', 10],          // site-local (устарел, но маршрутизируется во внутренних сетях)
+  ['ff00::', 8],           // multicast
+] as const) BLOCKED_V6.addSubnet(net, prefix, 'ipv6');
+
+function v4FromGroups(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 function isPrivateV6(ip: string): boolean {
-  const s = ip.toLowerCase();
-  if (s === '::1' || s === '::') return true;
-  if (s.startsWith('fc') || s.startsWith('fd')) return true; // unique local
-  if (isLinkLocalV6(s)) return true; // fe80::/10
-  const mappedDotted = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mappedDotted?.[1]) return isPrivateV4(mappedDotted[1]);
-  const mappedV4 = ipv4MappedToV4(s);
-  if (mappedV4) return isPrivateV4(mappedV4);
-  return false;
+  if (ip.includes('%')) return true; // zone id бывает только у link-local
+  const c = canonicalHost(ip);
+  if (isIP(c) !== 6) return true;
+  const g = expandV6Groups(c);
+  if (!g) return true;
+  const n = g.map((x) => parseInt(x, 16));
+  if (n.some((x) => Number.isNaN(x))) return true;
+  // IPv4-mapped ::ffff:0:0/96 — решает встроенный v4.
+  if (n.slice(0, 5).every((x) => x === 0) && n[5] === 0xffff) return isPrivateV4(v4FromGroups(n[6]!, n[7]!));
+  // NAT64 64:ff9b::/96 — встроенный v4.
+  if (n[0] === 0x64 && n[1] === 0xff9b && n.slice(2, 6).every((x) => x === 0)) return isPrivateV4(v4FromGroups(n[6]!, n[7]!));
+  // 6to4 2002::/16 — v4 в группах 1 и 2.
+  if (n[0] === 0x2002) return isPrivateV4(v4FromGroups(n[1]!, n[2]!));
+  return BLOCKED_V6.check(c, 'ipv6');
 }
 
-// Проверяет принадлежность блоку fe80::/10 (первые 10 бит: 1111111010),
-// а не только буквальному префиксу "fe80" — второй hex-блок должен быть в
-// диапазоне 0x80-0xbf.
-function isLinkLocalV6(s: string): boolean {
-  const match = s.match(/^fe([89ab][0-9a-f])(?::|$)/);
-  if (!match?.[1]) return false;
-  const secondByte = parseInt(match[1], 16);
-  return secondByte >= 0x80 && secondByte <= 0xbf;
-}
-
-// Раскрывает "::"-сокращение до полного списка hex-групп и, если адрес —
-// IPv4-mapped (::ffff:0:0/96, канонически сериализуется как ::ffff:xxxx:xxxx),
-// возвращает эквивалентный IPv4-адрес в точечно-десятичной записи.
-function ipv4MappedToV4(s: string): string | null {
-  const groups = expandV6Groups(s);
-  if (!groups) return null;
-  if (groups.slice(0, 5).some((g) => g !== '0') || groups[5] !== 'ffff') return null;
-  const high = parseInt(groups[6] ?? '0', 16);
-  const low = parseInt(groups[7] ?? '0', 16);
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
+// Раскрывает "::"-сокращение канонического адреса до 8 hex-групп.
 function expandV6Groups(s: string): string[] | null {
   if ((s.match(/::/g) ?? []).length > 1) return null;
-  const [head, tail] = s.split('::');
-  const headParts = head ? head.split(':').filter((p) => p !== '') : [];
-  const tailParts = tail ? tail.split(':').filter((p) => p !== '') : [];
   if (!s.includes('::')) {
     const parts = s.split(':');
     return parts.length === 8 ? parts : null;
   }
+  const [head, tail] = s.split('::');
+  const headParts = head ? head.split(':') : [];
+  const tailParts = tail ? tail.split(':') : [];
   const missing = 8 - headParts.length - tailParts.length;
-  if (missing < 0) return null;
-  return [...headParts, ...Array(missing).fill('0'), ...tailParts];
+  if (missing < 1) return null;
+  return [...headParts, ...Array<string>(missing).fill('0'), ...tailParts];
 }
 
-// Убирает завершающую точку в FQDN ("localhost." -> "localhost"), иначе она
-// обходит проверку строгого равенства и суффиксов.
-function stripTrailingDot(host: string): string {
-  return host.endsWith('.') ? host.slice(0, -1) : host;
+/** Имя, которое запрещено без DNS: localhost и локальные суффиксы. Chromium
+ *  сам резолвит *.localhost в loopback, не спрашивая DNS, поэтому такие имена
+ *  нельзя пускать даже при «публичном» ответе резолвера. Ждёт уже
+ *  нормализованный хост (нижний регистр, без скобок IPv6 и завершающей точки). */
+export function isBlockedHostname(host: string): boolean {
+  return host === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s));
 }
 
 export function assertAllowedUrl(input: string): URL {
@@ -104,8 +122,8 @@ export function assertAllowedUrl(input: string): URL {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new HarvestError('invalid_url', `Поддерживаются только http и https, получено ${u.protocol}`);
   }
-  const host = stripTrailingDot(u.hostname.toLowerCase().replace(/^\[|\]$/g, ''));
-  if (host === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
+  const host = canonicalHost(u.hostname);
+  if (isBlockedHostname(host)) {
     throw new HarvestError('invalid_url', `Локальные адреса запрещены: ${u.hostname}`);
   }
   if (isIP(host) && isPrivateAddress(host)) {
@@ -114,20 +132,13 @@ export function assertAllowedUrl(input: string): URL {
   return u;
 }
 
-// NOTE (honest limitation, not fixed here): this is check-then-use, not a
-// closed gate. It resolves `hostname` and validates the addresses it gets
-// back right now, but the actual request happens later and resolves again,
-// independently, inside undici and inside Playwright's own network stack -
-// neither of which is told to reuse this lookup or pin to these addresses.
-// A short-TTL DNS record that answers with a public address here and a
-// private one by the time undici/Playwright resolve it (classic DNS
-// rebinding) walks straight past this guard. Properly closing that gap
-// needs pinned-IP dispatch (resolve once, force undici's and Playwright's
-// connections onto that exact address, and validate the connecting socket's
-// remote address before any bytes are read) - real engineering, out of
-// scope for a personal tool. Do not read the code below as if it closes
-// this gap; it only shrinks the window and raises the bar from "always
-// works" to "wins a very fast DNS race".
+// NOTE (honest limitation, partly closed): this is check-then-use for the
+// plain HTTP path (undici), which resolves the name again on its own and can
+// lose a fast DNS-rebinding race. The BROWSER paths are different: Chromium
+// and Lightpanda run behind the local egress proxy (egress-proxy.ts), which
+// resolves, checks and connects to the same verified address (pinning), so
+// rebinding does not apply to page loads, redirects or in-page requests.
+// This function is the early, cheap check on navigation URLs and redirect hops.
 /**
  * Короткий кэш ПОЛОЖИТЕЛЬНЫХ вердиктов: browser use проверяет url страницы
  * на входе и после каждого действия, scrape — на каждом редиректе, и всё это
@@ -140,7 +151,7 @@ const PUBLIC_HOST_MAX = 512;
 const publicHosts = new Map<string, number>();
 
 export async function assertPublicHost(hostname: string): Promise<void> {
-  const host = stripTrailingDot(hostname.toLowerCase().replace(/^\[|\]$/g, ''));
+  const host = canonicalHost(hostname);
   const cachedUntil = publicHosts.get(host);
   if (cachedUntil !== undefined && cachedUntil > Date.now()) return;
   if (isIP(host)) {
